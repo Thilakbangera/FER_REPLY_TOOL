@@ -22,8 +22,18 @@ from app.core.reply_generator import generate_reply_docx
 from app.core.claims_parser import extract_amended_claims_from_pdf
 
 app = FastAPI(title="FER Reply Generator")
-app.add_middleware(CORSMiddleware, allow_origins=["*"], allow_credentials=True,
-                   allow_methods=["*"], allow_headers=["*"])
+ALLOWED_ORIGINS = [
+    "http://localhost:3000",
+    "https://lextriatech.netlify.app",
+]
+
+app.add_middleware(
+    CORSMiddleware,
+    allow_origins=ALLOWED_ORIGINS,
+    allow_credentials=False,   # IMPORTANT (no cookies needed here)
+    allow_methods=["*"],
+    allow_headers=["*"],
+)
 
 
 @app.get("/health")
