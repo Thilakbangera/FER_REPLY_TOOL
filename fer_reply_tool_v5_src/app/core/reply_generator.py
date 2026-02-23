@@ -1,0 +1,617 @@
+from __future__ import annotations
+
+import datetime
+import re
+from typing import List, Optional, Tuple
+
+from docx import Document
+from docx.shared import Pt, RGBColor
+
+from .fer_parser import FerParseResult
+
+
+def _para(
+    doc: Document,
+    text: str = "",
+    bold: bool = False,
+    size_pt: int = 11,
+    italic: bool = False,
+    underline: bool = False,
+) -> None:
+    p = doc.add_paragraph()
+    p.paragraph_format.space_after = Pt(4)
+    if text:
+        r = p.add_run(text)
+        r.bold = bold
+        r.italic = italic
+        r.underline = underline
+        r.font.size = Pt(size_pt)
+
+
+def _heading(doc: Document, text: str) -> None:
+    p = doc.add_paragraph()
+    p.paragraph_format.space_before = Pt(10)
+    p.paragraph_format.space_after = Pt(4)
+    r = p.add_run(text)
+    r.bold = True
+    r.font.size = Pt(11)
+
+
+def _obj_label(doc: Document, text: str) -> None:
+    p = doc.add_paragraph()
+    p.paragraph_format.space_after = Pt(2)
+    r = p.add_run(text)
+    r.bold = True
+    r.underline = True
+    r.font.size = Pt(11)
+
+
+def _reply_label(doc: Document) -> None:
+    p = doc.add_paragraph()
+    p.paragraph_format.space_before = Pt(6)
+    p.paragraph_format.space_after = Pt(4)
+    r = p.add_run("OUR REPLY:")
+    r.bold = True
+    r.font.size = Pt(11)
+
+
+def _placeholder(doc: Document, text: str) -> None:
+    p = doc.add_paragraph()
+    p.paragraph_format.space_after = Pt(4)
+    r = p.add_run(text)
+    r.font.size = Pt(11)
+    r.font.color.rgb = RGBColor(0xC0, 0x00, 0x00)
+
+
+def _set_cell_placeholder_red(cell, text: str) -> None:
+    p = cell.paragraphs[0] if cell.paragraphs else cell.add_paragraph()
+    if p.runs:
+        r = p.runs[0]
+        r.text = text
+        for extra in p.runs[1:]:
+            extra.text = ""
+    else:
+        r = p.add_run(text)
+    r.font.size = Pt(11)
+    r.font.color.rgb = RGBColor(0xC0, 0x00, 0x00)
+
+
+def _gap(doc: Document, pts: int = 6) -> None:
+    doc.add_paragraph().paragraph_format.space_after = Pt(pts)
+
+
+def _strip_hindi(text: str) -> str:
+    t = re.sub(r"[\u0900-\u097F]+", "", text or "")
+    # Preserve original line layout; only normalize excessive spaces per line.
+    lines = []
+    for ln in t.splitlines():
+        ln = re.sub(r"[ \t]{2,}", " ", ln).rstrip()
+        lines.append(ln)
+    return "\n".join(lines).strip()
+
+
+def _blocktext(doc: Document, text: str) -> None:
+    for line in (text or "").splitlines():
+        s = _strip_hindi(line.strip())
+        if not s:
+            continue
+        latin = re.sub(r"[\u0900-\u097F\s/\-()\[\].,;:0-9]", "", s)
+        if len(s) > 3 and len(latin) == 0:
+            continue
+        if re.match(r"^Page\s+\d+\s+of\s+\d+", s, re.I):
+            continue
+        if re.match(r"^THE\s+PATENT\s+OFFICE\s*$", s, re.I):
+            continue
+        if re.match(r"^\([0-9]+\)\.\s*[\u0900-\u097F]", s):
+            continue
+        _para(doc, s)
+
+
+def _extract_numbered_claims(amended_claims: str) -> List[Tuple[int, str]]:
+    text = amended_claims or ""
+    if not text.strip():
+        return []
+
+    pat = re.compile(r"(?im)^\s*(\d+)[\.\):]\s+")
+    matches = list(pat.finditer(text))
+    if not matches:
+        return []
+
+    claims: List[Tuple[int, str]] = []
+    for i, m in enumerate(matches):
+        no = int(m.group(1))
+        start = m.start()
+        end = matches[i + 1].start() if i + 1 < len(matches) else len(text)
+        block = text[start:end].strip()
+        if block:
+            claims.append((no, block))
+    return claims
+
+
+def _normalize_dx_range(dx_range: str) -> str:
+    raw = (dx_range or "").strip()
+    if not raw:
+        return "D1-Dn"
+
+    # Accept common separators and preserve entered range semantics.
+    tokens = re.split(r"[,\n;/]+", raw)
+    cleaned = []
+    for t in tokens:
+        s = t.strip().upper()
+        if not s:
+            continue
+        if re.fullmatch(r"D\d+", s):
+            cleaned.append(s)
+        else:
+            cleaned.append(t.strip())
+
+    if not cleaned:
+        return "D1-Dn"
+    return ", ".join(cleaned)
+
+
+def _add_regarding_claims_block(
+    doc: Document,
+    amended_claims: str,
+    dx_range: str = "D1-Dn",
+    dx_disclosed_features: str = "",
+) -> None:
+    claims = _extract_numbered_claims(amended_claims)
+    if not claims:
+        _placeholder(doc, "[INSERT REGARDING-CLAIMS ARGUMENTS HERE]")
+        return
+
+    dx_display = _normalize_dx_range(dx_range)
+    dx_features = (dx_disclosed_features or "").strip() or "[D1-Dn_DISCLOSURE]"
+    claim_text_map = {n: txt for n, txt in claims}
+    claim1_text = _strip_hindi(claim_text_map.get(1, "[INSERT AMENDED CLAIM 1 TEXT]"))
+    claim1_line = re.sub(r"\s+", " ", claim1_text).strip()
+
+    _para(doc, "Regarding Claim 1:", bold=True)
+    _para(
+        doc,
+        "The claim 1 is amended to more clearly articulate the subject matter and also to overcome the objections "
+        "raised in the first examination report. The amendments are fully supported in the specification on record.",
+    )
+    _para(
+        doc,
+        "In determining the differences between the prior art and the claims, the question is not whether the "
+        "differences themselves would have been obvious, but whether the claimed invention as a whole would have "
+        "been obvious. A prior art reference must be considered in its entirety, as a whole.",
+    )
+    _para(
+        doc,
+        "[Emphasis Added] To establish a prima facie case of obviousness, three basic criteria must be met: "
+        "(1) there must be some suggestion or motivation to modify the reference or to combine reference teachings; "
+        "(2) there must be reasonable expectation of success; and (3) the prior art reference must teach or suggest "
+        "all the claim limitations.",
+    )
+    _para(
+        doc,
+        f"Thus, Applicant respectfully traverses the rejection because the approach disclosed in {dx_display} and "
+        f"the approach claimed in the instant application are not only different, but portions of {dx_display} relied "
+        "upon do not render the claimed invention obvious.",
+    )
+    _para(doc, "Claim 1 has been amended to recite:")
+    _placeholder(doc, claim1_text)
+
+    cmp_table = doc.add_table(rows=2, cols=2)
+    cmp_table.style = "Table Grid"
+    cmp_table.rows[0].cells[0].text = "Instant invention"
+    cmp_table.rows[0].cells[1].text = f"{dx_display} disclosed features"
+    cmp_table.rows[1].cells[0].text = claim1_text
+    cmp_table.rows[1].cells[1].text = (
+        f"{_strip_hindi(dx_features)}\n\n"
+        f"Hence, {dx_display} fail to disclose {claim1_line}."
+    )
+
+    for n, txt in claims:
+        if n == 1:
+            continue
+        _gap(doc, 2)
+        _para(doc, f"Regarding Claim {n}:", bold=True)
+        _para(
+            doc,
+            f"Applicant has reviewed the entire application of {dx_display} and found that nowhere in the entire "
+            f"applications does {dx_display} describe or reasonably suggest the following features:",
+        )
+        _placeholder(doc, f"[AMENDED_CLAIM_{n}] {txt}")
+        _para(
+            doc,
+            f"Apart from the above, Applicant believes that dependent claim {n} is allowable not only by virtue of "
+            "dependency from patentable independent claim 1, but also by virtue of the additional features the claim "
+            "defines.",
+        )
+
+
+def _add_inventive_step_reply_from_cs(
+    doc: Document,
+    cs_background_text: str = "",
+    cs_summary_text: str = "",
+) -> None:
+    bg = (cs_background_text or "").strip()
+    sm = (cs_summary_text or "").strip()
+
+    _para(doc, "Technical Problem:-", bold=True)
+    if bg:
+        _blocktext(doc, bg)
+    else:
+        _placeholder(doc, "[INSERT 'BACKGROUND OF THE INVENTION' FROM CS HERE]")
+
+    _gap(doc, 2)
+    _para(doc, "Technical Solution:-", bold=True)
+    if sm:
+        _blocktext(doc, sm)
+    else:
+        _placeholder(doc, "[INSERT 'SUMMARY OF THE INVENTION' FROM CS HERE]")
+
+
+_FORMAL_CATEGORY_PATTERNS = [
+    ("Form 28", r"Form\s*28\b"),
+    ("Form 18", r"Form\s*18\b"),
+    ("Form 13", r"Form\s*13\b"),
+    ("Form 9", r"Form\s*9\b"),
+    ("Form 8", r"Form\s*8\b"),
+    ("Form 5", r"Form\s*5\b"),
+    ("Form 3", r"Form\s*3\b"),
+    ("Form 2", r"Form\s*2\b"),
+    ("Form 1", r"Form\s*1\b"),
+    ("Stamp Duty", r"Stamp\s+[Dd]uty"),
+    ("Power of Attorney", r"Power\s+of\s+Attorney"),
+    ("Format of Specification", r"Format\s+of\s+Specification|\(rule\s*13\)"),
+    ("Format of Drawings", r"Format\s+of\s+Drawings|In drawings|drawings sheet|section\s*78\(2\)"),
+    ("Other Deficiencies", r"Other\s+Deficiencies|fails\s+to\s+comply"),
+]
+
+
+def _category_from_formal_line(line: str) -> Optional[str]:
+    s = line.strip(" /:-")
+    if not s:
+        return None
+
+    # Strong line-level cues first.
+    if re.search(r"\bForm\s*28\b", s, re.I):
+        return "Form 28"
+    if re.search(r"\bForm\s*18\b", s, re.I):
+        return "Form 18"
+    if re.search(r"\bForm\s*13\b", s, re.I):
+        return "Form 13"
+    if re.search(r"\bForm\s*9\b", s, re.I):
+        return "Form 9"
+    if re.search(r"\bForm\s*8\b", s, re.I):
+        return "Form 8"
+    if re.search(r"\bForm\s*5\b", s, re.I):
+        return "Form 5"
+    if re.search(r"\bForm\s*3\b", s, re.I):
+        return "Form 3"
+    if re.search(r"\bForm\s*2\b", s, re.I) and re.search(r"specification|format|provisional|complete", s, re.I):
+        return "Form 2"
+    if re.search(r"\bForm\s*1\b", s, re.I) and re.search(r"category|serial number|applicant", s, re.I):
+        return "Form 1"
+
+    for cat, pat in _FORMAL_CATEGORY_PATTERNS:
+        if re.search(r"^(?:In\s+the\s+)?(?:Whether\s+GPA,\s*SPA,)?\s*" + pat, s, re.I):
+            return cat
+    return None
+
+
+def _clean_formal_line(line: str) -> str:
+    s = (line or "").strip()
+    s = re.sub(r"^[/|]+", "", s).strip()
+    s = re.sub(r"\s+", " ", s).strip()
+    return s
+
+
+def _clean_formal_remark(remark: str) -> str:
+    t = re.sub(r"\s+", " ", (remark or "")).strip()
+    if not t:
+        return ""
+
+    # Common OCR fragments seen in FER formal tables.
+    t = t.replace('words ""', 'words "We Claim"')
+    t = re.sub(r"Applicant attention is drawn to of the Patents Act\.?", "Applicant attention is drawn to section 78(2) of the Patents Act.", t, flags=re.I)
+    t = re.sub(r"\bto of the Patents Act\.?", "to section 78(2) of the Patents Act.", t, flags=re.I)
+    t = re.sub(r"\s+", " ", t).strip()
+    t = re.sub(r"\s*-\s*IV\s*:?\s*/?\s*$", "", t, flags=re.I).strip()
+
+    # Deduplicate repeated sentences while preserving order.
+    parts = [p.strip() for p in re.split(r"(?<=[.!?])\s+", t) if p.strip()]
+    dedup = []
+    seen = set()
+    for p in parts:
+        key = re.sub(r"[^a-z0-9]+", "", p.lower())
+        if key and key not in seen:
+            seen.add(key)
+            dedup.append(p)
+    if dedup:
+        t = " ".join(dedup)
+    return t
+
+
+def _split_mixed_formal_rows(rows: List[Tuple[str, str]]) -> List[Tuple[str, str]]:
+    split_cues = [
+        ("Form 1", r"\bWhile filing the instant application,\s*in Form\s*1\b"),
+        ("Form 2", r"\bIn Form\s*2\b"),
+        ("Form 28", r"\bApplicant is required to submit Form 28\b"),
+    ]
+
+    out: List[Tuple[str, str]] = []
+    for cat, remark in rows:
+        r = remark or ""
+        split_done = False
+        for target_cat, cue in split_cues:
+            m = re.search(cue, r, re.I)
+            if not m or target_cat == cat:
+                continue
+            head = _clean_formal_remark(r[:m.start()].strip())
+            tail = _clean_formal_remark(r[m.start():].strip())
+            if head:
+                out.append((cat, head))
+            if tail:
+                out.append((target_cat, tail))
+            split_done = True
+            break
+        if not split_done:
+            out.append((cat, _clean_formal_remark(r)))
+    return out
+
+
+def _parse_formal_rows(text: str):
+    if not text:
+        return []
+
+    m_hdr = re.search(r"(?:Objections?)[^\n]*?Remarks?", text, re.I)
+    table_text = text[m_hdr.end():].strip() if m_hdr else text
+    table_text = re.sub(r"\n?Page\s+\d+\s+of\s+\d+\s*\n?THE\s+PATENT\s+OFFICE\s*\n?", "\n", table_text, flags=re.I)
+    table_text = re.sub(r"\bPART\s*[-–]\s*IV\b.*$", "", table_text, flags=re.I | re.S).strip()
+
+    lines = [_clean_formal_line(ln) for ln in table_text.splitlines()]
+    lines = [ln for ln in lines if ln and len(ln) > 2]
+
+    rows: List[Tuple[str, str]] = []
+    current_cat: Optional[str] = None
+    current_parts: List[str] = []
+
+    def flush():
+        nonlocal current_cat, current_parts
+        if not current_cat:
+            current_parts = []
+            return
+        remark = " ".join(current_parts).strip()
+        remark = re.sub(r"\s+", " ", remark).strip()
+        if remark:
+            rows.append((current_cat, _clean_formal_remark(remark)[:1200]))
+        current_cat = None
+        current_parts = []
+
+    for ln in lines:
+        if re.search(r"^DOCUMENTS\s+ON\s+RECORD", ln, re.I):
+            break
+        if re.search(r"^PART\s*[-–]\s*IV", ln, re.I):
+            break
+
+        cat = _category_from_formal_line(ln)
+        if cat:
+            flush()
+            current_cat = cat
+            stripped = ln
+            for c2, pat in _FORMAL_CATEGORY_PATTERNS:
+                if c2 == cat:
+                    stripped = re.sub(
+                        r"^(?:In\s+the\s+)?(?:Whether\s+GPA,\s*SPA,)?\s*" + pat + r"\s*",
+                        "",
+                        stripped,
+                        flags=re.I,
+                    )
+                    break
+            stripped = stripped.strip(" :-")
+            if stripped:
+                current_parts.append(stripped)
+            continue
+
+        if current_cat:
+            current_parts.append(ln)
+
+    flush()
+
+    rows = _split_mixed_formal_rows(rows)
+
+    # Merge duplicate categories while preserving discovery order.
+    merged = {}
+    order: List[str] = []
+    for cat, remark in rows:
+        if cat not in merged:
+            merged[cat] = []
+            order.append(cat)
+        merged[cat].append(remark)
+
+    final_rows = []
+    for cat in order:
+        joined = " ".join(merged[cat])
+        joined = re.sub(r"\s+", " ", joined).strip()
+        if joined:
+            final_rows.append((cat, joined[:900]))
+
+    if not final_rows and table_text:
+        return [("Formal Requirements", table_text[:1200])]
+    return final_rows
+
+
+def _add_formal_table(
+    doc: Document,
+    fer_formal_text: str = "",
+    fer_formal_rows: Optional[List[Tuple[str, str]]] = None,
+) -> None:
+    table = doc.add_table(rows=1, cols=3)
+    table.style = "Table Grid"
+
+    for cell, label in zip(table.rows[0].cells, ["Objections", "Remarks", "Our Reply"]):
+        cell.text = label
+        if cell.paragraphs and cell.paragraphs[0].runs:
+            cell.paragraphs[0].runs[0].bold = True
+
+    if fer_formal_rows:
+        for ob, rem in fer_formal_rows:
+            row = table.add_row().cells
+            row[0].text = _strip_hindi(ob)
+            row[1].text = _strip_hindi(rem)
+            _set_cell_placeholder_red(row[2], "[INSERT COMPLIANCE STATEMENT / REPLY HERE]")
+    else:
+        raw_formal = (fer_formal_text or "").strip()
+        if raw_formal:
+            row = table.add_row().cells
+            row[0].text = "As in FER"
+            row[1].text = _strip_hindi(raw_formal)
+            _set_cell_placeholder_red(row[2], "[INSERT COMPLIANCE STATEMENT / REPLY HERE]")
+        else:
+            row = table.add_row().cells
+            row[0].text = "[FORMAL OBJECTION CATEGORY]"
+            row[1].text = "[PASTE REMARKS FROM FER HERE]"
+            _set_cell_placeholder_red(row[2], "[INSERT COMPLIANCE STATEMENT HERE]")
+
+
+def generate_reply_docx(
+    fer: FerParseResult,
+    cs_title: str,
+    amended_claims: str,
+    detailed_obs_text: str = "",
+    formal_reqs_text: str = "",
+    agent: Optional[str] = None,
+    office_address: str = "THE PATENT OFFICE\nI.P.O BUILDING\nG.S.T.Road, Guindy\nChennai - [PIN]",
+    dx_range: str = "D1-Dn",
+    dx_disclosed_features: str = "",
+    formal_reqs_rows: Optional[List[Tuple[str, str]]] = None,
+    cs_background_text: str = "",
+    cs_summary_text: str = "",
+) -> Document:
+    doc = Document()
+    doc.styles["Normal"].font.name = "Times New Roman"
+    doc.styles["Normal"].font.size = Pt(11)
+
+    today = datetime.date.today().strftime("%d %B %Y")
+    _para(doc, today)
+    _para(doc, "To,")
+
+    address_lines = [ln.strip() for ln in (office_address or "").splitlines() if ln.strip()]
+    if not address_lines:
+        address_lines = ["THE PATENT OFFICE", "I.P.O BUILDING", "G.S.T.Road, Guindy", "Chennai - [PIN]"]
+    for ln in address_lines:
+        _para(doc, ln)
+    _gap(doc, 8)
+
+    controller = fer.controller_name or "[Controller Name]"
+    _para(doc, f"Kind Attention: {controller}, Controller of Patents")
+    _gap(doc, 4)
+
+    app_no = fer.application_no or "[Application No]"
+    filing = fer.filing_date or "[Filing Date]"
+    fer_date = fer.fer_dispatch_date or "[FER Date]"
+    appl = fer.applicant or "[Applicant]"
+    title = cs_title or fer.title or "[Title of Invention]"
+
+    _para(doc, f"Re: Response to FER dated {fer_date}, with respect to Patent Application No: {app_no} filed on {filing}")
+    _para(doc, f"Applicant(s): {appl}")
+    _para(doc, f'Title: "{title}"')
+    _para(doc, f"Letter No: Ref.No/Application No /{app_no} Dated: {fer_date}")
+    _gap(doc, 6)
+    _para(doc, "Dear Sir,")
+    _para(
+        doc,
+        f"With reference to your letter No Ref/Application No /{app_no} dated {fer_date}, "
+        "our humble submissions in the FER matter are as follows for and on behalf of applicant herein:",
+    )
+
+    _heading(doc, "AMENDMENTS MADE TO THE CLAIMS ARE AS FOLLOWS")
+    _para(doc, "We Claim:", bold=True)
+    claims_lines = [l.strip() for l in (amended_claims or "").splitlines() if l.strip()]
+    if claims_lines:
+        for line in claims_lines:
+            _para(doc, line)
+    else:
+        _placeholder(doc, "[PASTE AMENDED CLAIMS HERE - upload the Amended Claims PDF]")
+    _gap(doc, 8)
+
+    objections = fer.objections or []
+    has_regarding_claims_objection = False
+
+    if not objections:
+        for i in range(1, 7):
+            _heading(doc, f"SUBMISSION TO OBJECTION {i}")
+            _placeholder(doc, f"[PASTE EXAMINER'S OBJECTION {i} TEXT HERE]")
+            _reply_label(doc)
+            _placeholder(doc, f"[INSERT REPLY TO OBJECTION {i} HERE]")
+    else:
+        for obj in objections:
+            _heading(doc, f"SUBMISSION TO OBJECTION {obj.number}")
+            _obj_label(doc, obj.heading.upper() + ":")
+            _blocktext(doc, obj.body)
+            _gap(doc, 4)
+            _reply_label(doc)
+
+            h = obj.heading.upper()
+            if "INVENTIVE STEP" in h:
+                _add_inventive_step_reply_from_cs(
+                    doc,
+                    cs_background_text=cs_background_text,
+                    cs_summary_text=cs_summary_text,
+                )
+                _placeholder(doc, "[EXPLAIN HOW AMENDED CLAIM OVERCOMES D1, D2, etc.]")
+                _placeholder(doc, "[ADD INSTANT INVENTION vs PRIOR ART TABLE IF NEEDED]")
+            elif "NOVELTY" in h:
+                _placeholder(doc, "[INSERT NOVELTY ARGUMENT AGAINST CITED PRIOR ART HERE]")
+                _placeholder(doc, "[EXPLAIN DISTINGUISHING FEATURES OF AMENDED CLAIMS HERE]")
+            elif "NON PATENTABILITY" in h:
+                _placeholder(doc, "[INSERT SECTION 3(f)/3(o)/3(k) ARGUMENT HERE]")
+                _placeholder(doc, "[EXPLAIN WHY INVENTION IS NOT EXCLUDED UNDER CITED CLAUSE]")
+            elif "REGARDING CLAIMS" in h:
+                has_regarding_claims_objection = True
+                _add_regarding_claims_block(
+                    doc,
+                    amended_claims,
+                    dx_range=dx_range,
+                    dx_disclosed_features=dx_disclosed_features,
+                )
+            elif "SUFFICIENCY" in h:
+                _placeholder(doc, "[INSERT ABSTRACT / SUFFICIENCY COMPLIANCE STATEMENT HERE]")
+            elif "CLARITY" in h:
+                _placeholder(doc, "[INSERT CLARITY RESPONSE - EXPLAIN HOW AMENDMENTS ADDRESS EACH POINT]")
+            elif "DEFINITIVENESS" in h:
+                _placeholder(doc, "[INSERT DEFINITIVENESS RESPONSE (Sec 10(4)(c), 10(5)) HERE]")
+            elif "OTHERS" in h:
+                _placeholder(doc, "[INSERT RESPONSE TO OTHER REQUIREMENTS HERE]")
+            else:
+                _placeholder(doc, f"[INSERT REPLY TO OBJECTION {obj.number} HERE]")
+            _gap(doc, 8)
+
+    if not has_regarding_claims_objection and _extract_numbered_claims(amended_claims):
+        next_no = (objections[-1].number + 1) if objections else 1
+        _heading(doc, f"SUBMISSION TO OBJECTION {next_no}")
+        _obj_label(doc, "REGARDING CLAIMS:")
+        _reply_label(doc)
+        _add_regarding_claims_block(
+            doc,
+            amended_claims,
+            dx_range=dx_range,
+            dx_disclosed_features=dx_disclosed_features,
+        )
+        _gap(doc, 8)
+
+    _heading(doc, "FORMAL REQUIREMENTS:")
+    _add_formal_table(doc, formal_reqs_text, formal_reqs_rows)
+
+    _gap(doc, 10)
+    _para(
+        doc,
+        "In the event above submissions are not found to be persuasive, a further hearing/an opportunity for "
+        "clarification (through telephone, meeting or the like), preferably in view of Section 80 or Section 14 "
+        "may please be granted before taking any adverse decision.",
+    )
+    _gap(doc, 8)
+    _para(doc, "Yours faithfully,")
+    _para(doc, agent or "[Patent Agent Name]")
+    _para(doc, "(Patent Agent - [Reg. No.])")
+    _gap(doc, 6)
+    _para(doc, "Enclosure:")
+    _placeholder(doc, "1. [List enclosures here]")
+
+    return doc
