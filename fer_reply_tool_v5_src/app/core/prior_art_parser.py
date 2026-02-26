@@ -5,7 +5,8 @@ from typing import List
 
 import pdfplumber
 
-_MAX_ABSTRACT_WORDS = 260
+# Keep this high so full abstracts are preserved, including multi-page abstracts.
+_MAX_ABSTRACT_WORDS = 1200
 
 _STOP_HEADINGS = re.compile(
     r"^(?:what\s+is\s+claimed|claims?|we\s+claim|claim\s*\d+|"
@@ -171,11 +172,21 @@ def _polish_abstract_tail(text: str) -> str:
     if not t:
         return ""
 
-    # If capped mid-sentence, keep complete sentence up to the last strong boundary.
+    # If no terminal punctuation, preserve enumerated abstract tails and add a period.
     if t[-1] not in ".!?":
-        cut = max(t.rfind("."), t.rfind("!"), t.rfind("?"))
-        if cut >= int(len(t) * 0.55):
-            t = t[:cut + 1].strip()
+        # Example: "...;(210) ...;(212) ...;(214) ...;(FF) End"
+        if re.search(r"\(\d{2,4}\)", t) or re.search(r";\s*\([A-Za-z0-9,]+\)\s*[A-Za-z]", t):
+            return f"{t}."
+
+        # If likely hard truncation (very short trailing token), cut to last complete sentence.
+        words = re.findall(r"\b\w+\b", t)
+        last_word = words[-1] if words else ""
+        if len(last_word) <= 2:
+            cut = max(t.rfind("."), t.rfind("!"), t.rfind("?"))
+            if cut >= int(len(t) * 0.4):
+                return t[:cut + 1].strip()
+
+        return f"{t}."
     return t
 
 

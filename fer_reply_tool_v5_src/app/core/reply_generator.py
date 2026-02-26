@@ -203,6 +203,47 @@ def _normalize_dx_range(dx_range: str) -> str:
     return ", ".join(cleaned)
 
 
+def _format_d_label_ranges(labels: List[str]) -> str:
+    nums = []
+    for lbl in labels:
+        m = re.fullmatch(r"D(\d{1,3})", (lbl or "").strip().upper())
+        if not m:
+            return ", ".join([x for x in labels if x]) if labels else ""
+        nums.append(int(m.group(1)))
+
+    if not nums:
+        return ""
+
+    nums = sorted(set(nums))
+    ranges = []
+    start = prev = nums[0]
+    for n in nums[1:]:
+        if n == prev + 1:
+            prev = n
+            continue
+        ranges.append((start, prev))
+        start = prev = n
+    ranges.append((start, prev))
+
+    parts = []
+    for a, b in ranges:
+        if a == b:
+            parts.append(f"D{a}")
+        else:
+            parts.append(f"D{a}-D{b}")
+    return ", ".join(parts)
+
+
+def _resolve_dx_display(prior_labels: List[str], dx_range: str) -> str:
+    lbls = [x.strip().upper() for x in (prior_labels or []) if (x or "").strip()]
+    if lbls:
+        ranged = _format_d_label_ranges(lbls)
+        if ranged:
+            return ranged
+        return ", ".join(lbls)
+    return _normalize_dx_range(dx_range)
+
+
 def _normalize_prior_art_entries(prior_art_entries: Optional[List[Dict[str, str]]]) -> List[Dict[str, str]]:
     normalized: List[Dict[str, str]] = []
     for i, row in enumerate(prior_art_entries or [], 1):
@@ -265,6 +306,18 @@ def _truncate_words(text: str, max_words: int = 80) -> str:
     return f"{cut}."
 
 
+def _complete_sentence_text(text: str) -> str:
+    raw = re.sub(r"\s+", " ", (text or "")).strip()
+    if not raw:
+        return ""
+    if raw[-1] in ".!?":
+        return raw
+    end = max(raw.rfind("."), raw.rfind("!"), raw.rfind("?"))
+    if end >= int(len(raw) * 0.4):
+        return raw[:end + 1].strip()
+    return f"{raw}."
+
+
 def _build_prior_art_disclosure_from_abstracts(prior_arts: List[Dict[str, str]]) -> str:
     lines: List[str] = []
     for row in prior_arts:
@@ -272,7 +325,7 @@ def _build_prior_art_disclosure_from_abstracts(prior_arts: List[Dict[str, str]])
         abstract = re.sub(r"\s+", " ", row.get("abstract", "")).strip()
         if not label or not abstract:
             continue
-        lines.append(f"{label} discloses {_truncate_words(abstract, 120)}")
+        lines.append(f"{label} discloses {_complete_sentence_text(abstract)}")
     return "\n".join(lines).strip()
 
 
@@ -291,7 +344,7 @@ def _build_combined_difference_text(
         if not label:
             continue
         abstract = re.sub(r"\s+", " ", row.get("abstract", "")).strip()
-        disclosed = _truncate_words(abstract, 120) if abstract else "[INSERT PRIOR-ART ABSTRACT DISCLOSURE]"
+        disclosed = _complete_sentence_text(abstract) if abstract else "[INSERT PRIOR-ART ABSTRACT DISCLOSURE]"
         contrast_parts.append(
             f"{label} discloses {disclosed}"
         )
@@ -300,9 +353,10 @@ def _build_combined_difference_text(
         return f"Combined difference over {dx_display}: [INSERT CLAIM-1 VS {dx_display} COMBINED DIFFERENCE ANALYSIS]."
 
     contrasted = "; ".join(contrast_parts)
+    contrast_end = "" if contrasted.endswith((".", "!", "?")) else "."
     return (
         f"Combined difference over {dx_display}: The claimed invention requires the combined feature set of Claim 1 "
-        f"({cleaned_claim}). In contrast, {contrasted}. Accordingly, {dx_display} do not individually or in "
+        f"({cleaned_claim}). In contrast, {contrasted}{contrast_end} Accordingly, {dx_display} do not individually or in "
         "combination disclose the complete claimed combination."
     )
 
@@ -332,7 +386,7 @@ def _add_regarding_claims_block(
 
     normalized_prior_arts = _normalize_prior_art_entries(prior_art_entries)
     prior_labels = [p["label"] for p in normalized_prior_arts if p.get("label")]
-    dx_display = ", ".join(prior_labels) if prior_labels else _normalize_dx_range(dx_range)
+    dx_display = _resolve_dx_display(prior_labels, dx_range)
 
     dx_features = (dx_disclosed_features or "").strip()
     if not dx_features:

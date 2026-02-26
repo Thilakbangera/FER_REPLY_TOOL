@@ -48,12 +48,13 @@ def extract_amended_claims_from_pdf(path: str) -> str:
 
     tail = t[start_idx:]
     end = len(tail)
-    for ep in [
-        r"\bSUBMISSION\s+TO\s+OBJECTION\b",
-        r"\bFORMAL\s+REQUIREMENTS\b",
-        r"\bYOURS\s+FAITHFULLY\b",
-        r"\bENCLOSURE\b",
-    ]:
+    end_markers = [
+        r"(?im)^\s*SUBMISSION\s+TO\s+OBJECTION\b",
+        r"(?im)^\s*FORMAL\s+REQUIREMENTS\b",
+        r"(?im)^\s*YOURS\s+FAITHFULLY\b",
+        r"(?im)^\s*ENCLOSURES?\s*:?\s*$",
+    ]
+    for ep in end_markers:
         m2 = re.search(ep, tail, re.I)
         if m2:
             end = min(end, m2.start())
@@ -70,7 +71,7 @@ def extract_amended_claims_from_pdf(path: str) -> str:
         if m4:
             tail2 = t[m4.start():]
             end2 = len(tail2)
-            for ep in [r"\bSUBMISSION\s+TO\s+OBJECTION\b", r"\bFORMAL\s+REQUIREMENTS\b", r"\bYOURS\s+FAITHFULLY\b", r"\bENCLOSURE\b"]:
+            for ep in end_markers:
                 m5 = re.search(ep, tail2, re.I)
                 if m5:
                     end2 = min(end2, m5.start())
