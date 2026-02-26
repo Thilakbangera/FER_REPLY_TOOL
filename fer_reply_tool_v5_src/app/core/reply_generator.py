@@ -130,10 +130,23 @@ def _strip_hindi(text: str) -> str:
 
 
 def _blocktext(doc: Document, text: str) -> None:
-    for line in (text or "").splitlines():
-        s = _strip_hindi(line.strip())
+    raw_text = _strip_hindi(text or "")
+    if not raw_text:
+        return
+
+    merged: List[str] = []
+
+    def flush() -> None:
+        if merged:
+            _para(doc, " ".join(merged).strip())
+            merged.clear()
+
+    for raw_line in raw_text.splitlines():
+        s = raw_line.strip()
         if not s:
+            flush()
             continue
+
         latin = re.sub(r"[\u0900-\u097F\s/\-()\[\].,;:0-9]", "", s)
         if len(s) > 3 and len(latin) == 0:
             continue
@@ -143,7 +156,20 @@ def _blocktext(doc: Document, text: str) -> None:
             continue
         if re.match(r"^\([0-9]+\)\.\s*[\u0900-\u097F]", s):
             continue
-        _para(doc, s)
+
+        if re.match(r"^(?:\(?\d+[.)]|[A-Za-z][.)]|[-*])\s+", s):
+            flush()
+            _para(doc, s)
+            continue
+
+        if s.endswith(":") and len(s) <= 90:
+            flush()
+            _para(doc, s)
+            continue
+
+        merged.append(s)
+
+    flush()
 
 
 def _extract_numbered_claims(amended_claims: str) -> List[Tuple[int, str]]:
@@ -312,9 +338,6 @@ def _complete_sentence_text(text: str) -> str:
         return ""
     if raw[-1] in ".!?":
         return raw
-    end = max(raw.rfind("."), raw.rfind("!"), raw.rfind("?"))
-    if end >= int(len(raw) * 0.4):
-        return raw[:end + 1].strip()
     return f"{raw}."
 
 
@@ -478,6 +501,13 @@ def _add_regarding_claims_block(
         if n == 1:
             continue
         dep_text = _compact_claim_quote(txt)
+        dep_text = re.sub(r"^\s*\d+[\.\):]\s+", "", dep_text).strip()
+        dep_text_quoted = dep_text
+        if dep_text_quoted:
+            if dep_text_quoted.startswith('"') and dep_text_quoted.endswith('"'):
+                dep_text_quoted = dep_text_quoted
+            else:
+                dep_text_quoted = f'"{dep_text_quoted}"'
         _gap(doc, 2)
         _para(doc, f"Regarding Claim {n}:", bold=True)
         _para(
@@ -485,7 +515,7 @@ def _add_regarding_claims_block(
             f"Applicant has reviewed the entire application of {dx_display} and found that nowhere in the entire "
             f"applications does {dx_display} describe or reasonably suggest the following features:",
         )
-        _placeholder(doc, f"[AMENDED_CLAIM_{n}] {dep_text}")
+        _para(doc, dep_text_quoted)
         _para(
             doc,
             f"Apart from the above, Applicant believes that dependent claim {n} is allowable not only by virtue of "
@@ -794,12 +824,16 @@ def generate_reply_docx(
 
     _heading(doc, "AMENDMENTS MADE TO THE CLAIMS ARE AS FOLLOWS")
     _para(doc, "We Claim:", bold=True)
-    claims_lines = [l.strip() for l in (amended_claims or "").splitlines() if l.strip()]
-    if claims_lines:
-        for line in claims_lines:
-            _para(doc, line)
+    claims_blocks = _extract_numbered_claims(amended_claims)
+    if claims_blocks:
+        for _, block in claims_blocks:
+            _para(doc, _compact_claim_quote(block))
     else:
-        _placeholder(doc, "[PASTE AMENDED CLAIMS HERE - upload the Amended Claims PDF]")
+        claims_lines = [l.strip() for l in (amended_claims or "").splitlines() if l.strip()]
+        if claims_lines:
+            _para(doc, _compact_claim_quote("\n".join(claims_lines)))
+        else:
+            _placeholder(doc, "[PASTE AMENDED CLAIMS HERE - upload the Amended Claims PDF]")
     _gap(doc, 8)
 
     objections = fer.objections or []

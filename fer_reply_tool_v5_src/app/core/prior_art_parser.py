@@ -13,7 +13,8 @@ _STOP_HEADINGS = re.compile(
     r"detailed\s+description|description(?:\s+of\s+the\s+drawings?)?|"
     r"brief\s+description(?:\s+of\s+the\s+drawings?)?|"
     r"technical\s+field|field\s+of\s+the\s+invention|background(?:\s+of\s+the\s+invention)?|"
-    r"summary(?:\s+of\s+the\s+invention)?|examples?|drawings?)\b",
+    r"summary(?:\s+of\s+the\s+invention)?|introduction|index\s+terms?|keywords?|"
+    r"examples?|drawings?|fig(?:ure)?s?)\b",
     re.I,
 )
 
@@ -37,6 +38,23 @@ def clean_prior_art_text(text: str) -> str:
     )
     t = re.sub(r"\bEspacenet\s*[–-]\s*search\s+results\b", " ", t, flags=re.I)
     t = re.sub(r"\bsearch\s+results\b", " ", t, flags=re.I)
+    t = re.sub(r"\bRelated\s+U\s*\.?\s*S\s*\.?\s+Application\s+Data\b", " ", t, flags=re.I)
+    t = re.sub(r"\(\s*Continued\s*\)", " ", t, flags=re.I)
+    t = re.sub(r"\(\s*51\s*\)\s*Int\s*\.?\s*Cl\s*\.?", " ", t, flags=re.I)
+    t = re.sub(r"\bInt\s*\.?\s*Cl\s*\.?\b", " ", t, flags=re.I)
+    t = re.sub(r"\bPat\s*\.?\s*No\s*\.?\s*[\d,]+\b", " ", t, flags=re.I)
+    t = re.sub(
+        r"\b[A-Za-z]{3,9}\.?\s*\d{1,2}\s*,?\s*\d{4}\s*,?\s*now\s*Pat\s*\.?\s*No\s*\.?\s*[\d,]+\s*,?\s*which\s+is\s+a\b",
+        " ",
+        t,
+        flags=re.I,
+    )
+    t = re.sub(
+        r"\b[A-Za-z]{3,9}\.?\s*\d{1,2}\s*,?\s*\d{4}\s*,?\s*now\s*,?\s*which\s+is\s+a\b",
+        " ",
+        t,
+        flags=re.I,
+    )
     t = re.sub(r"(\w)-\s*\n\s*(\w)", r"\1\2", t)
 
     lines: List[str] = []
@@ -71,7 +89,40 @@ def clean_prior_art_text(text: str) -> str:
 def _normalize_line(line: str) -> str:
     s = (line or "").strip()
     s = re.sub(r"\s+", " ", s)
+    s = _strip_inline_metadata(s)
+    s = re.sub(r"(?<=[A-Za-z])\s+\d{1,2}\s+(?=[a-z])", " ", s)
+    s = re.sub(r"\s+", " ", s)
     return s.strip(" \t")
+
+
+def _strip_inline_metadata(line: str) -> str:
+    s = line or ""
+    s = re.sub(r"\bRelated\s+U\.?S\.?\s+Application\s+Data\b", " ", s, flags=re.I)
+    s = re.sub(r"\(\s*Continued\s*\)", " ", s, flags=re.I)
+    s = re.sub(r"\(\s*51\s*\)\s*Int\s*\.?\s*Cl\s*\.?", " ", s, flags=re.I)
+    s = re.sub(r"\bInt\s*\.?\s*Cl\s*\.?\b", " ", s, flags=re.I)
+    s = re.sub(r"\bU\.?S\.?\s*Cl\.?\b", " ", s, flags=re.I)
+    s = re.sub(r"\bPat\s*\.?\s*No\s*\.?\s*[\d,]+\b", " ", s, flags=re.I)
+    s = re.sub(
+        r"\bUS\s*\d{4}/\d{6,}\s*[A-Z]\d?\s*[A-Za-z]{3}\.?\s*\d{1,2}\s*,?\s*\d{4}\b",
+        " ",
+        s,
+        flags=re.I,
+    )
+    s = re.sub(
+        r"\b[A-Za-z]{3,9}\.?\s*\d{1,2}\s*,?\s*\d{4}\s*,?\s*now\s*Pat\s*\.?\s*No\s*\.?\s*[\d,]+\s*,?\s*which\s+is\s+a\b",
+        " ",
+        s,
+        flags=re.I,
+    )
+    s = re.sub(
+        r"\b[A-Za-z]{3,9}\.?\s*\d{1,2}\s*,?\s*\d{4}\s*,?\s*now\s*,?\s*which\s+is\s+a\b",
+        " ",
+        s,
+        flags=re.I,
+    )
+    s = re.sub(r"\(\s*\d{2}\s*\)\s*(?:U\.?S\.?\s*)?Cl\.?", " ", s, flags=re.I)
+    return re.sub(r"\s+", " ", s).strip()
 
 
 def _is_noise_line(line: str) -> bool:
@@ -94,11 +145,57 @@ def _is_noise_line(line: str) -> bool:
         return True
     if re.fullmatch(r"\d{2,4}[/-]\d{2}[/-]\d{2,4}", s):
         return True
+    if re.fullmatch(r"\d{4}[/-]\d{1,2}[/-]\d{1,2}", s):
+        return True
+    if re.fullmatch(r"\d{1,2}\s+[A-Za-z]{3,9}\s+\d{4}", s):
+        return True
     if re.search(r"\b\d{1,2}:\d{2}\s*(?:AM|PM)\b", s, re.I):
         return True
     if re.fullmatch(r"THE\s+PATENT\s+OFFICE", s, re.I):
         return True
     if re.search(r"\bDocument\s+generated\s+on\b", s, re.I):
+        return True
+    if re.search(r"\b(?:application|pub(?:lication)?|priority)\s*(?:no\.?|number|date)\b", s, re.I):
+        return True
+    if re.search(r"\bkind\s+code\b", s, re.I):
+        return True
+    if re.search(r"\brelated\s+u\.?s\.?\s+application\s+data\b", s, re.I):
+        return True
+    if re.search(r"\bint\.?\s*cl\.?\b", s, re.I):
+        return True
+    if re.search(r"\bU\.?\s*S\.?\s*C\s*I\.?\b", s, re.I):
+        return True
+    if re.fullmatch(r"\(\s*\d[\d\s]{1,8}\.\d{2}\s*\)", s):
+        return True
+    if re.fullmatch(r"\(\s*\d+\s*\)\s*U\.?\s*S\.?\s*C\.?\s*I\.?", s, re.I):
+        return True
+    if re.fullmatch(r"\(\s*\d+\s*\)\s*U\.?\s*S\.?\s*Cl\.?", s, re.I):
+        return True
+    if re.fullmatch(r"[A-HY]\d{2}[A-Z]?\s*\d+(?:\.\d+)?/\d+(?:\.\d+)?", s, re.I):
+        return True
+    if re.fullmatch(r"[A-HY]\d{2}[A-Z]?\s*\d+(?:\.\d+)?/\d+(?:\.\d+)?\s*\(\s*\d{4}\.\d{2}\s*\)", s, re.I):
+        return True
+    if re.fullmatch(
+        r"(?:[A-HY]\d{2}[A-Z]?\s*\d+(?:\.\d+)?/\d+(?:\.\d+)?(?:\s*\(\s*\d[\d\s]{1,8}\.\d{2}\s*\))?\s*;?\s*){1,4}",
+        s,
+        re.I,
+    ):
+        return True
+    if re.fullmatch(
+        r"\(\s*\d[\d\s]{1,8}\.\d{2}\s*\)\s*;\s*[A-HY]\d{2}[A-Z]?\s*\d+(?:\.\d+)?/\d+(?:\.\d+)?(?:\s*\(\s*\d[\d\s]{1,8}\.\d{2}\s*\))?\s*;?",
+        s,
+        re.I,
+    ):
+        return True
+    if re.fullmatch(r"CPC", s, re.I):
+        return True
+    if re.fullmatch(r"\d+\s+Claims?\s*,\s*\d+\s+Drawing\s+Sheets?", s, re.I):
+        return True
+    if re.search(r"\(\s*continued\s*\)", s, re.I):
+        return True
+    if re.search(r"\bpat\.?\s*no\.?\s*[\d,]+\b", s, re.I):
+        return True
+    if re.fullmatch(r"(?:[A-Z]{1,3}\s+)?\d{1,3}(?:[,\s]\d{3})+(?:\s+[A-Z]\d?)?", s):
         return True
     if len(re.findall(r"[A-Za-z]", s)) < 2 and len(s) < 8:
         return True
@@ -110,6 +207,10 @@ def _is_section_heading(line: str) -> bool:
     if not s:
         return False
 
+    # Patent classification codes (e.g., G06F 15/177) are metadata, not section headings.
+    if re.fullmatch(r"[A-HY]\d{2}[A-Z]?\s*\d+(?:\.\d+)?/\d+(?:\.\d+)?", s, re.I):
+        return False
+
     lower = s.lower()
     heading_starts = (
         "abstract",
@@ -117,6 +218,9 @@ def _is_section_heading(line: str) -> bool:
         "field of the invention",
         "background",
         "summary",
+        "introduction",
+        "keywords",
+        "index terms",
         "brief description",
         "detailed description",
         "claims",
@@ -135,6 +239,15 @@ def _is_section_heading(line: str) -> bool:
     if re.match(r"^\d+[\.\)]\s+[A-Z][A-Za-z ]{2,80}$", s):
         return True
 
+    return False
+
+
+def _looks_like_claim_start(line: str) -> bool:
+    s = (line or "").strip()
+    if re.match(r"^\d+[\.\)]\s+(?:a|an|the)\b", s, re.I):
+        return True
+    if re.match(r"^claim\s*\d+\b", s, re.I):
+        return True
     return False
 
 
@@ -166,6 +279,11 @@ def _polish_abstract_tail(text: str) -> str:
     t = (text or "").strip()
     if not t:
         return ""
+
+    # Drop patent-metadata residue often appended at the end of 2-column extracts.
+    m_tail = re.search(r"\bAt\s*\(\s*\d[\d\s]*(?:\.\d+)?\s*\)?\s*$", t, flags=re.I)
+    if m_tail:
+        t = t[: m_tail.start()].rstrip(" ,;")
 
     # Remove dangling OCR residue like a trailing single character token.
     t = re.sub(r"(?:\s+[A-Za-z])+$", "", t).strip()
@@ -209,23 +327,32 @@ def _collect_candidate(lines: List[str], start_idx: int, inline_text: str = "") 
     if inline and not _is_noise_line(inline):
         parts.append(inline)
 
-    for i in range(start_idx, min(len(lines), start_idx + 220)):
+    for i in range(start_idx, min(len(lines), start_idx + 420)):
         line = lines[i]
         if not line:
-            if parts and len(" ".join(parts).split()) >= 45:
-                break
             continue
         if _is_noise_line(line):
             continue
         if _STOP_HEADINGS.match(line):
+            if parts and len(" ".join(parts).split()) >= 20:
+                break
+            continue
+        if re.search(r"\b\d+\s+claims?\s*,\s*\d+\s+drawing\s+sheets?\b", line, re.I):
             if parts:
                 break
             continue
+        if _looks_like_claim_start(line) and parts and len(" ".join(parts).split()) >= 30:
+            break
         if _is_section_heading(line) and len(parts) >= 2:
             break
         parts.append(line)
-        word_count = len(" ".join(parts).split())
-        if word_count >= _MAX_ABSTRACT_WORDS and re.search(r"[.!?]\s*$", " ".join(parts).strip()):
+        joined = " ".join(parts).strip()
+        word_count = len(joined.split())
+        if word_count >= 420 and re.search(r"[.!?]\s*$", joined):
+            break
+        if word_count >= 560:
+            break
+        if word_count >= _MAX_ABSTRACT_WORDS and re.search(r"[.!?]\s*$", joined):
             break
         if word_count >= (_MAX_ABSTRACT_WORDS + 90):
             break
@@ -241,19 +368,30 @@ def _extract_heading_based(lines: List[str]) -> str:
         r"^(?:\[\d{1,3}\]\s*)?abstract(?:\s+of\s+the\s+disclosure)?\b\s*[:\-]?\s*(.*)$",
         re.I,
     )
+    candidates: List[str] = []
     for i, line in enumerate(lines):
         m = abs_pat.match(line)
         if m:
             abstract = _collect_candidate(lines, i + 1, inline_text=m.group(1))
-            if len(abstract.split()) >= 28:
-                return abstract
+            if len(abstract.split()) >= 15:
+                candidates.append(abstract)
 
-        m_inline = re.search(r"\babstract\s*[:\-]\s*(.+)$", line, re.I)
-        if m_inline:
-            abstract = _collect_candidate(lines, i + 1, inline_text=m_inline.group(1))
-            if len(abstract.split()) >= 28:
-                return abstract
-    return ""
+    if not candidates:
+        return ""
+
+    def _heading_candidate_score(text: str) -> tuple:
+        words = len((text or "").split())
+        fit = 0
+        if 35 <= words <= 350:
+            fit = 4
+        elif 15 <= words <= 500:
+            fit = 2
+        else:
+            fit = -3
+        has_end_punct = 1 if (text or "").strip().endswith((".", "!", "?")) else 0
+        return (fit + has_end_punct, -abs(words - 160), len(text or ""))
+
+    return max(candidates, key=_heading_candidate_score)
 
 
 def _score_paragraph(text: str) -> int:
@@ -272,6 +410,10 @@ def _score_paragraph(text: str) -> int:
         score += 3
     else:
         score -= 3
+    if words > 380:
+        score -= 6
+    if words > 520:
+        score -= 8
 
     low = t.lower()
     positive = [
@@ -297,6 +439,9 @@ def _score_paragraph(text: str) -> int:
         score -= 2
     if re.search(r"\bcomprising\b", low):
         score -= 1
+    score -= len(re.findall(r"\([A-Z][^)]{0,40}\d{4}\)", t)) * 2
+    if re.search(r"\bet\s+al\.", low):
+        score -= 2
 
     return score
 
@@ -333,14 +478,18 @@ def _extract_best_paragraph(lines: List[str]) -> str:
 
     best = max(paragraphs, key=_score_paragraph)
     if _score_paragraph(best) < 1:
-        best = max(paragraphs, key=lambda p: len(p.split()))
-    return _trim_words(best, _MAX_ABSTRACT_WORDS)
+        moderate = [p for p in paragraphs if 35 <= len(p.split()) <= 260]
+        if moderate:
+            best = max(moderate, key=_score_paragraph)
+        else:
+            best = max(paragraphs, key=lambda p: len(p.split()))
+    return _trim_words(best, min(_MAX_ABSTRACT_WORDS, 360))
 
 
 def extract_prior_art_abstract_from_pdf(path: str) -> str:
     page_texts: List[str] = []
     with pdfplumber.open(path) as pdf:
-        for page in pdf.pages[:8]:
+        for page in pdf.pages:
             page_texts.append(page.extract_text() or "")
 
     lines = _build_lines("\n\n".join(page_texts))
