@@ -5,7 +5,12 @@ import streamlit as st
 
 st.set_page_config(page_title="FER Reply Generator", page_icon="DOC", layout="wide")
 
-BACKEND = st.sidebar.text_input("Backend URL", "http://127.0.0.1:8000")
+BACKEND = st.sidebar.text_input("Backend URL", "https://fer-reply-tool.onrender.com")
+BACKEND = BACKEND.strip().rstrip("/")
+if BACKEND and not BACKEND.startswith(("http://", "https://")):
+    BACKEND = "https://" + BACKEND
+
+st.sidebar.write("Using backend:", BACKEND)
 
 st.title("FER Reply Generator")
 st.caption("Upload FER PDF + CS PDF + Amended Claims PDF to auto-generate the reply DOCX with objections pre-filled.")
