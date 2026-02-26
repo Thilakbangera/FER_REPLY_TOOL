@@ -29,6 +29,25 @@ def _para(
         r.font.size = Pt(size_pt)
 
 
+def _para_red(
+    doc: Document,
+    text: str = "",
+    bold: bool = False,
+    size_pt: int = 11,
+    italic: bool = False,
+    underline: bool = False,
+) -> None:
+    p = doc.add_paragraph()
+    p.paragraph_format.space_after = Pt(4)
+    if text:
+        r = p.add_run(text)
+        r.bold = bold
+        r.italic = italic
+        r.underline = underline
+        r.font.size = Pt(size_pt)
+        r.font.color.rgb = RGBColor(0xC0, 0x00, 0x00)
+
+
 def _heading(doc: Document, text: str) -> None:
     p = doc.add_paragraph()
     p.paragraph_format.space_before = Pt(10)
@@ -148,6 +167,20 @@ def _extract_numbered_claims(amended_claims: str) -> List[Tuple[int, str]]:
     return claims
 
 
+def _compact_claim_quote(text: str) -> str:
+    t = _strip_hindi(text or "")
+    t = t.replace("\r", " ").replace("\n", " ")
+    t = re.sub(r"\s+", " ", t).strip()
+    t = re.sub(r"\s+([,.;:!?])", r"\1", t)
+    t = re.sub(r"\(\s+", "(", t)
+    t = re.sub(r"\s+\)", ")", t)
+    t = re.sub(r"\[\s+", "[", t)
+    t = re.sub(r"\s+\]", "]", t)
+    t = re.sub(r'\s+"', '"', t)
+    t = re.sub(r'"\s+', '"', t)
+    return t
+
+
 def _normalize_dx_range(dx_range: str) -> str:
     raw = (dx_range or "").strip()
     if not raw:
@@ -218,6 +251,37 @@ def _build_prior_art_disclosure_from_abstracts(prior_arts: List[Dict[str, str]])
     return "\n".join(lines).strip()
 
 
+def _build_combined_difference_text(
+    claim1_text: str,
+    prior_arts: List[Dict[str, str]],
+    dx_display: str,
+) -> str:
+    cleaned_claim = re.sub(r"\s+", " ", claim1_text or "").strip()
+    if not prior_arts:
+        return f"Combined difference over {dx_display}: [INSERT CLAIM-1 VS {dx_display} COMBINED DIFFERENCE ANALYSIS]."
+
+    contrast_parts: List[str] = []
+    for row in prior_arts:
+        label = (row.get("label", "") or "").strip()
+        if not label:
+            continue
+        abstract = re.sub(r"\s+", " ", row.get("abstract", "")).strip()
+        disclosed = _truncate_words(abstract, 120) if abstract else "[INSERT PRIOR-ART ABSTRACT DISCLOSURE]"
+        contrast_parts.append(
+            f"{label} discloses {disclosed}"
+        )
+
+    if not contrast_parts:
+        return f"Combined difference over {dx_display}: [INSERT CLAIM-1 VS {dx_display} COMBINED DIFFERENCE ANALYSIS]."
+
+    contrasted = "; ".join(contrast_parts)
+    return (
+        f"Combined difference over {dx_display}: The claimed invention requires the combined feature set of Claim 1 "
+        f"({cleaned_claim}). In contrast, {contrasted}. Accordingly, {dx_display} do not individually or in "
+        "combination disclose the complete claimed combination."
+    )
+
+
 def _add_prior_art_diagram(doc: Document, diagram_path: str, label: str) -> None:
     path = (diagram_path or "").strip()
     if not path:
@@ -252,8 +316,8 @@ def _add_regarding_claims_block(
         dx_features = "[D1-Dn_DISCLOSURE]"
 
     claim_text_map = {n: txt for n, txt in claims}
-    claim1_text = _strip_hindi(claim_text_map.get(1, "[INSERT AMENDED CLAIM 1 TEXT]"))
-    claim1_line = re.sub(r"\s+", " ", claim1_text).strip()
+    claim1_text = _compact_claim_quote(claim_text_map.get(1, "[INSERT AMENDED CLAIM 1 TEXT]"))
+    claim1_line = claim1_text
 
     _para(doc, "Regarding Claim 1:", bold=True)
     _para(
@@ -281,7 +345,7 @@ def _add_regarding_claims_block(
         "upon do not render the claimed invention obvious.",
     )
     _para(doc, "Claim 1 has been amended to recite:")
-    _placeholder(doc, claim1_text)
+    _para(doc, claim1_text)
 
     _gap(doc, 2)
     if normalized_prior_arts:
@@ -300,6 +364,8 @@ def _add_regarding_claims_block(
             diagram = row.get("diagram", "").strip()
             if diagram and not diagram_path:
                 _para(doc, diagram)
+
+        _para_red(doc, _build_combined_difference_text(claim1_text, normalized_prior_arts, dx_display))
 
         _para(
             doc,
@@ -332,6 +398,7 @@ def _add_regarding_claims_block(
     for n, txt in claims:
         if n == 1:
             continue
+        dep_text = _compact_claim_quote(txt)
         _gap(doc, 2)
         _para(doc, f"Regarding Claim {n}:", bold=True)
         _para(
@@ -339,7 +406,7 @@ def _add_regarding_claims_block(
             f"Applicant has reviewed the entire application of {dx_display} and found that nowhere in the entire "
             f"applications does {dx_display} describe or reasonably suggest the following features:",
         )
-        _placeholder(doc, f"[AMENDED_CLAIM_{n}] {txt}")
+        _placeholder(doc, f"[AMENDED_CLAIM_{n}] {dep_text}")
         _para(
             doc,
             f"Apart from the above, Applicant believes that dependent claim {n} is allowable not only by virtue of "

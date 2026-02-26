@@ -5,22 +5,7 @@ import streamlit as st
 
 st.set_page_config(page_title="FER Reply Generator", page_icon="DOC", layout="wide")
 
-BACKEND = st.sidebar.text_input("Backend URL", "https://fer-reply-tool.onrender.com")
-BACKEND = BACKEND.strip().rstrip("/")
-if BACKEND and not BACKEND.startswith(("http://", "https://")):
-    BACKEND = "https://" + BACKEND
-
-st.sidebar.write("Using backend:", BACKEND)
-
-if st.sidebar.button("Ping backend (try /health, /api/health, /docs)"):
-    for path in ["/health", "/api/health", "/docs"]:
-        url = BACKEND + path
-        try:
-            resp = requests.get(url, timeout=15, allow_redirects=True)
-            st.sidebar.success(f"{path}: {resp.status_code}")
-            break
-        except Exception as e:
-            st.sidebar.warning(f"{path}: {e}")
+BACKEND = st.sidebar.text_input("Backend URL", "http://127.0.0.1:8000")
 
 st.title("FER Reply Generator")
 st.caption("Upload FER PDF + CS PDF + Amended Claims PDF to auto-generate the reply DOCX with objections pre-filled.")
