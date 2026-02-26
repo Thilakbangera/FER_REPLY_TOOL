@@ -234,10 +234,35 @@ def _normalize_prior_art_entries(prior_art_entries: Optional[List[Dict[str, str]
 
 
 def _truncate_words(text: str, max_words: int = 80) -> str:
-    words = re.findall(r"\S+", text or "")
+    raw = re.sub(r"\s+", " ", (text or "")).strip()
+    if not raw:
+        return ""
+
+    words = re.findall(r"\S+", raw)
     if len(words) <= max_words:
-        return (text or "").strip()
-    return " ".join(words[:max_words]).strip()
+        if raw[-1] in ".!?":
+            return raw
+        end = max(raw.rfind("."), raw.rfind("!"), raw.rfind("?"))
+        if end >= int(len(raw) * 0.4):
+            return raw[:end + 1].strip()
+        return f"{raw}."
+
+    cut = " ".join(words[:max_words]).strip()
+    if cut.endswith((".", "!", "?")):
+        return cut
+
+    tail_words = words[max_words:max_words + 100]
+    if tail_words:
+        tail_probe = " ".join(tail_words).strip()
+        m = re.search(r"[.!?](?:\s|$)", tail_probe)
+        if m:
+            return f"{cut} {tail_probe[:m.end()].strip()}".strip()
+
+    back_cut = max(cut.rfind("."), cut.rfind("!"), cut.rfind("?"))
+    if back_cut >= int(len(cut) * 0.35):
+        return cut[:back_cut + 1].strip()
+
+    return f"{cut}."
 
 
 def _build_prior_art_disclosure_from_abstracts(prior_arts: List[Dict[str, str]]) -> str:
@@ -247,7 +272,7 @@ def _build_prior_art_disclosure_from_abstracts(prior_arts: List[Dict[str, str]])
         abstract = re.sub(r"\s+", " ", row.get("abstract", "")).strip()
         if not label or not abstract:
             continue
-        lines.append(f"{label}: {_truncate_words(abstract, 70)}")
+        lines.append(f"{label} discloses {_truncate_words(abstract, 120)}")
     return "\n".join(lines).strip()
 
 
