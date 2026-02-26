@@ -1,9 +1,10 @@
 from __future__ import annotations
 
 import io
+import json
 import os
 import tempfile
-from typing import Optional
+from typing import Dict, List, Optional
 
 from fastapi import FastAPI, UploadFile, File, Form
 from fastapi.responses import JSONResponse, StreamingResponse
@@ -20,20 +21,65 @@ from app.core.fer_parser import (
 )
 from app.core.reply_generator import generate_reply_docx
 from app.core.claims_parser import extract_amended_claims_from_pdf
+from app.core.prior_art_parser import (
+    clean_prior_art_text,
+    extract_prior_art_abstract_from_pdf,
+    normalize_prior_art_label,
+)
 
 app = FastAPI(title="FER Reply Generator")
-ALLOWED_ORIGINS = [
-    "http://localhost:3000",
-    "https://lextriatech.netlify.app",
-]
+app.add_middleware(CORSMiddleware, allow_origins=["*"], allow_credentials=True,
+                   allow_methods=["*"], allow_headers=["*"])
 
-app.add_middleware(
-    CORSMiddleware,
-    allow_origins=ALLOWED_ORIGINS,
-    allow_credentials=False,   # IMPORTANT (no cookies needed here)
-    allow_methods=["*"],
-    allow_headers=["*"],
-)
+
+def _safe_json_list(raw: str) -> List[Dict]:
+    if not (raw or "").strip():
+        return []
+    try:
+        data = json.loads(raw)
+    except Exception:
+        return []
+    if not isinstance(data, list):
+        return []
+    return [x for x in data if isinstance(x, dict)]
+
+
+def _safe_file_suffix(name: str, fallback: str = ".bin") -> str:
+    base = (name or "").strip()
+    _, ext = os.path.splitext(base)
+    ext = (ext or "").lower()
+    if _is_safe_ext(ext):
+        return ext
+    return fallback
+
+
+def _is_safe_ext(ext: str) -> bool:
+    return bool(ext) and len(ext) <= 8 and ext.startswith(".") and ext[1:].isalnum()
+
+
+async def _save_upload_to_temp(upload: UploadFile, suffix: str = ".bin") -> str:
+    with tempfile.NamedTemporaryFile(delete=False, suffix=suffix) as tmp:
+        tmp.write(await upload.read())
+        return tmp.name
+
+
+def _normalize_manual_prior_art_entries(raw_entries: List[Dict]) -> List[Dict[str, str]]:
+    out: List[Dict[str, str]] = []
+    for i, row in enumerate(raw_entries, 1):
+        label = normalize_prior_art_label(str(row.get("label", "")), i)
+        abstract = clean_prior_art_text(str(row.get("abstract", "")))
+        diagram = clean_prior_art_text(str(row.get("diagram", "")))
+        if not abstract and not diagram:
+            continue
+        out.append(
+            {
+                "label": label,
+                "abstract": abstract,
+                "diagram": diagram,
+                "source_name": clean_prior_art_text(str(row.get("source_name", ""))),
+            }
+        )
+    return out
 
 
 @app.get("/health")
@@ -58,26 +104,29 @@ async def generate_reply(
     fer_pdf: UploadFile = File(...),
     cs_pdf: UploadFile = File(...),                      # Complete Specification PDF (required)
     amended_claims_pdf: Optional[UploadFile] = File(None),  # Amended Claims PDF (required)
+    prior_art_pdfs: Optional[List[UploadFile]] = File(None),
+    prior_art_diagrams: Optional[List[UploadFile]] = File(None),
     title: str = Form(""),  # kept for backward compatibility; CS title is authoritative
     agent: Optional[str] = Form(None),
     office_address: str = Form("THE PATENT OFFICE\nI.P.O BUILDING\nG.S.T.Road, Guindy\nChennai - [PIN]"),
     dx_range: str = Form("D1-Dn"),
     dx_disclosed_features: str = Form(""),
+    prior_art_mode: str = Form("pdf"),
+    prior_art_input_mode: str = Form(""),
+    prior_art_manual_json: str = Form(""),
+    prior_arts_json: str = Form(""),
+    prior_art_pdf_meta_json: str = Form(""),
+    prior_arts_meta_json: str = Form(""),
 ):
     fer_path = cs_path = claims_path = None
+    prior_art_paths: List[str] = []
+    prior_art_diagram_paths: List[str] = []
     try:
-        with tempfile.NamedTemporaryFile(delete=False, suffix=".pdf") as tmp:
-            tmp.write(await fer_pdf.read())
-            fer_path = tmp.name
-
-        with tempfile.NamedTemporaryFile(delete=False, suffix=".pdf") as tmp:
-            tmp.write(await cs_pdf.read())
-            cs_path = tmp.name
+        fer_path = await _save_upload_to_temp(fer_pdf, suffix=".pdf")
+        cs_path = await _save_upload_to_temp(cs_pdf, suffix=".pdf")
 
         if amended_claims_pdf:
-            with tempfile.NamedTemporaryFile(delete=False, suffix=".pdf") as tmp:
-                tmp.write(await amended_claims_pdf.read())
-                claims_path = tmp.name
+            claims_path = await _save_upload_to_temp(amended_claims_pdf, suffix=".pdf")
 
         fer = parse_fer_pdf(fer_path)
         fer_raw = read_pdf_text(fer_path)
@@ -102,11 +151,110 @@ async def generate_reply(
         if claims_path:
             claims_text = extract_amended_claims_from_pdf(claims_path)
 
+        prior_art_entries: List[Dict[str, str]] = []
+        mode = (prior_art_input_mode or prior_art_mode or "pdf").strip().lower()
+
+        manual_json_raw = prior_arts_json if (prior_arts_json or "").strip() else prior_art_manual_json
+        pdf_meta_json_raw = prior_arts_meta_json if (prior_arts_meta_json or "").strip() else prior_art_pdf_meta_json
+
+        pdf_meta_rows = _safe_json_list(pdf_meta_json_raw)
+        meta_by_upload_name: Dict[str, Dict] = {}
+        for row in pdf_meta_rows:
+            upload_name = clean_prior_art_text(str(row.get("upload_name", "")))
+            if upload_name and upload_name not in meta_by_upload_name:
+                meta_by_upload_name[upload_name] = row
+
+        if mode == "text":
+            manual_rows = _safe_json_list(manual_json_raw)
+            dia_iter = iter(list(prior_art_diagrams or []))
+            for i, row in enumerate(manual_rows, 1):
+                label = normalize_prior_art_label(str(row.get("label", "")), i)
+                abstract = clean_prior_art_text(str(row.get("abstract", "")))
+                diagram_text = clean_prior_art_text(str(row.get("diagram", "")))
+                diagram_path = ""
+
+                has_diagram = bool(row.get("has_diagram", False)) or bool(diagram_text)
+                diagram_name = ""
+                if has_diagram:
+                    dimg = next(dia_iter, None)
+                    if dimg is not None and (dimg.filename or "").strip():
+                        diagram_name = clean_prior_art_text(dimg.filename)
+                        ext = _safe_file_suffix(dimg.filename, fallback=".png")
+                        diagram_path = await _save_upload_to_temp(dimg, suffix=ext)
+                        prior_art_diagram_paths.append(diagram_path)
+
+                if not diagram_text and has_diagram:
+                    diagram_text = f"Diagram provided ({diagram_name})" if diagram_name else "Diagram provided"
+
+                if not abstract and not diagram_text and not diagram_path:
+                    continue
+                prior_art_entries.append(
+                    {
+                        "label": label,
+                        "abstract": abstract,
+                        "diagram": diagram_text,
+                        "diagram_path": diagram_path,
+                        "source_name": clean_prior_art_text(str(row.get("source_name", ""))),
+                    }
+                )
+        else:
+            pdf_list = list(prior_art_pdfs or [])
+            dia_list = list(prior_art_diagrams or [])
+            dia_iter = iter(dia_list)
+            total_rows = max(len(pdf_meta_rows), len(pdf_list), len(dia_list))
+            for i in range(total_rows):
+                upload = pdf_list[i] if i < len(pdf_list) else None
+
+                row = {}
+                if upload is not None:
+                    row = meta_by_upload_name.get(upload.filename or "") or {}
+                if not row and i < len(pdf_meta_rows):
+                    row = pdf_meta_rows[i]
+
+                label = normalize_prior_art_label(str(row.get("label", "")), i + 1)
+                diagram = clean_prior_art_text(str(row.get("diagram", "")))
+                diagram_path = ""
+                abstract = ""
+                source_name = ""
+
+                if upload is not None:
+                    prior_path = await _save_upload_to_temp(upload, suffix=".pdf")
+                    prior_art_paths.append(prior_path)
+                    abstract = extract_prior_art_abstract_from_pdf(prior_path)
+                    source_name = clean_prior_art_text(upload.filename or "")
+
+                has_diagram = bool(row.get("has_diagram", False)) or bool(diagram)
+                diagram_upload = next(dia_iter, None) if has_diagram else None
+                if diagram_upload is None and not pdf_meta_rows and i < len(dia_list):
+                    # Backward fallback when per-row metadata is absent.
+                    diagram_upload = dia_list[i]
+
+                diagram_name = clean_prior_art_text((diagram_upload.filename or "") if diagram_upload else "")
+                if diagram_upload is not None and (diagram_upload.filename or "").strip():
+                    ext = _safe_file_suffix(diagram_upload.filename, fallback=".png")
+                    diagram_path = await _save_upload_to_temp(diagram_upload, suffix=ext)
+                    prior_art_diagram_paths.append(diagram_path)
+                if not diagram and has_diagram:
+                    diagram = f"Diagram provided ({diagram_name})" if diagram_name else "Diagram provided"
+
+                if not abstract and not diagram and not diagram_path:
+                    continue
+                prior_art_entries.append(
+                    {
+                        "label": label,
+                        "abstract": abstract,
+                        "diagram": diagram,
+                        "diagram_path": diagram_path,
+                        "source_name": source_name,
+                    }
+                )
+
         doc = generate_reply_docx(
             fer=fer, cs_title=cs_title, amended_claims=claims_text,
             detailed_obs_text=detailed_obs, formal_reqs_text=formal_reqs,
             agent=agent, office_address=office_address,
             dx_range=dx_range, dx_disclosed_features=dx_disclosed_features,
+            prior_art_entries=prior_art_entries,
             formal_reqs_rows=formal_rows,
             cs_background_text=cs_background,
             cs_summary_text=cs_summary,
@@ -120,7 +268,7 @@ async def generate_reply(
             media_type="application/vnd.openxmlformats-officedocument.wordprocessingml.document",
             headers={"Content-Disposition": f'attachment; filename="{filename}"'})
     finally:
-        for p in [fer_path, cs_path, claims_path]:
+        for p in [fer_path, cs_path, claims_path, *prior_art_paths, *prior_art_diagram_paths]:
             if p:
                 try: os.remove(p)
                 except: pass

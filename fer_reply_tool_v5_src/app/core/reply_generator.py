@@ -2,10 +2,11 @@ from __future__ import annotations
 
 import datetime
 import re
-from typing import List, Optional, Tuple
+from typing import Dict, List, Optional, Tuple
 
 from docx import Document
-from docx.shared import Pt, RGBColor
+from docx.enum.text import WD_ALIGN_PARAGRAPH
+from docx.shared import Inches, Pt, RGBColor
 
 from .fer_parser import FerParseResult
 
@@ -80,6 +81,25 @@ def _gap(doc: Document, pts: int = 6) -> None:
     doc.add_paragraph().paragraph_format.space_after = Pt(pts)
 
 
+def _iter_cell_paragraphs(cell):
+    for p in cell.paragraphs:
+        yield p
+    for nested in cell.tables:
+        for row in nested.rows:
+            for c in row.cells:
+                yield from _iter_cell_paragraphs(c)
+
+
+def _justify_document(doc: Document) -> None:
+    for p in doc.paragraphs:
+        p.paragraph_format.alignment = WD_ALIGN_PARAGRAPH.JUSTIFY
+    for table in doc.tables:
+        for row in table.rows:
+            for cell in row.cells:
+                for p in _iter_cell_paragraphs(cell):
+                    p.paragraph_format.alignment = WD_ALIGN_PARAGRAPH.JUSTIFY
+
+
 def _strip_hindi(text: str) -> str:
     t = re.sub(r"[\u0900-\u097F]+", "", text or "")
     # Preserve original line layout; only normalize excessive spaces per line.
@@ -150,19 +170,87 @@ def _normalize_dx_range(dx_range: str) -> str:
     return ", ".join(cleaned)
 
 
+def _normalize_prior_art_entries(prior_art_entries: Optional[List[Dict[str, str]]]) -> List[Dict[str, str]]:
+    normalized: List[Dict[str, str]] = []
+    for i, row in enumerate(prior_art_entries or [], 1):
+        if not isinstance(row, dict):
+            continue
+        label = (str(row.get("label", "")).strip() or f"D{i}").upper()
+        if not re.fullmatch(r"D\d{1,3}", label):
+            label = f"D{i}"
+
+        abstract = _strip_hindi(str(row.get("abstract", ""))).strip()
+        abstract = re.sub(r"[ \t]{2,}", " ", abstract)
+        abstract = re.sub(r"\n{3,}", "\n\n", abstract)
+
+        diagram = _strip_hindi(str(row.get("diagram", ""))).strip()
+        diagram = re.sub(r"[ \t]{2,}", " ", diagram)
+        diagram_path = str(row.get("diagram_path", "")).strip()
+
+        if not abstract and not diagram and not diagram_path:
+            continue
+        normalized.append(
+            {
+                "label": label,
+                "abstract": abstract,
+                "diagram": diagram,
+                "diagram_path": diagram_path,
+            }
+        )
+    return normalized
+
+
+def _truncate_words(text: str, max_words: int = 80) -> str:
+    words = re.findall(r"\S+", text or "")
+    if len(words) <= max_words:
+        return (text or "").strip()
+    return " ".join(words[:max_words]).strip()
+
+
+def _build_prior_art_disclosure_from_abstracts(prior_arts: List[Dict[str, str]]) -> str:
+    lines: List[str] = []
+    for row in prior_arts:
+        label = row.get("label", "").strip()
+        abstract = re.sub(r"\s+", " ", row.get("abstract", "")).strip()
+        if not label or not abstract:
+            continue
+        lines.append(f"{label}: {_truncate_words(abstract, 70)}")
+    return "\n".join(lines).strip()
+
+
+def _add_prior_art_diagram(doc: Document, diagram_path: str, label: str) -> None:
+    path = (diagram_path or "").strip()
+    if not path:
+        return
+    try:
+        doc.add_picture(path, width=Inches(5.6))
+        _gap(doc, 2)
+    except Exception:
+        _placeholder(doc, f"[{label} DIAGRAM COULD NOT BE INSERTED]")
+
+
 def _add_regarding_claims_block(
     doc: Document,
     amended_claims: str,
     dx_range: str = "D1-Dn",
     dx_disclosed_features: str = "",
+    prior_art_entries: Optional[List[Dict[str, str]]] = None,
 ) -> None:
     claims = _extract_numbered_claims(amended_claims)
     if not claims:
         _placeholder(doc, "[INSERT REGARDING-CLAIMS ARGUMENTS HERE]")
         return
 
-    dx_display = _normalize_dx_range(dx_range)
-    dx_features = (dx_disclosed_features or "").strip() or "[D1-Dn_DISCLOSURE]"
+    normalized_prior_arts = _normalize_prior_art_entries(prior_art_entries)
+    prior_labels = [p["label"] for p in normalized_prior_arts if p.get("label")]
+    dx_display = ", ".join(prior_labels) if prior_labels else _normalize_dx_range(dx_range)
+
+    dx_features = (dx_disclosed_features or "").strip()
+    if not dx_features:
+        dx_features = _build_prior_art_disclosure_from_abstracts(normalized_prior_arts)
+    if not dx_features:
+        dx_features = "[D1-Dn_DISCLOSURE]"
+
     claim_text_map = {n: txt for n, txt in claims}
     claim1_text = _strip_hindi(claim_text_map.get(1, "[INSERT AMENDED CLAIM 1 TEXT]"))
     claim1_line = re.sub(r"\s+", " ", claim1_text).strip()
@@ -195,14 +283,50 @@ def _add_regarding_claims_block(
     _para(doc, "Claim 1 has been amended to recite:")
     _placeholder(doc, claim1_text)
 
+    _gap(doc, 2)
+    if normalized_prior_arts:
+        for row in normalized_prior_arts:
+            label = row["label"]
+            abstract = row.get("abstract", "")
+            if abstract:
+                abstract_text = re.sub(r"\s+", " ", abstract).strip()
+                if abstract_text:
+                    _para(doc, f"{label} discloses {abstract_text}")
+
+            diagram_path = row.get("diagram_path", "").strip()
+            if diagram_path:
+                _add_prior_art_diagram(doc, diagram_path, label)
+
+            diagram = row.get("diagram", "").strip()
+            if diagram and not diagram_path:
+                _para(doc, diagram)
+
+        _para(
+            doc,
+            f"[Emphasis Added] {dx_display} discloses a completely different solution and does not set motivation to combine {dx_display} to arrive at the Applicant claimed invention. Even the problem statement, and the solution of {dx_display} and Applicant claimed invention is different and hence the solutions. The problem statement is clearly evident from background of {dx_display} and Applicant claimed invention. It is to be noted that {dx_display} discloses completely different method and does not disclose the following features of the applicant claimed invention:",
+        )
+    else:
+        _placeholder(doc, f"[INSERT {dx_display} ABSTRACT(S) HERE]")
+        _placeholder(doc, f"[EXPLAIN HOW INSTANT INVENTION DIFFERS FROM COMBINED {dx_display}]")
+
     cmp_table = doc.add_table(rows=2, cols=2)
+    cell = cmp_table.rows[1].cells[1]
     cmp_table.style = "Table Grid"
-    cmp_table.rows[0].cells[0].text = "Instant invention"
+    cmp_table.rows[0].cells[0].text = "Applicant claimed feature"
     cmp_table.rows[0].cells[1].text = f"{dx_display} disclosed features"
     cmp_table.rows[1].cells[0].text = claim1_text
     cmp_table.rows[1].cells[1].text = (
         f"{_strip_hindi(dx_features)}\n\n"
         f"Hence, {dx_display} fail to disclose {claim1_line}."
+    )
+    cell.add_paragraph("") 
+    cell.add_paragraph(
+    f"A person with combining skills cannot combine the teachings provided in the prior arts ({dx_display}). "
+    f"Hence, {dx_display} fails to disclose the features present in the invention. The interpretation asserted by the examiner is not supported by the cited portions of the {dx_display}. Thus, reconsideration is respectfully requested."
+    )
+    _para(
+            doc,
+            f"[Emphasis added] It is important to consider the functions and underlying essence of the invention as described in all steps mentioned in the claims. Therefore, it is respectfully submitted that the interpretation asserted by the Examiner is not supported by the disclosure of {dx_display}. Further, Applicant believe the interpretation asserted by the Examiner regarding the claimed steps is not supported by the disclosure of {dx_display}. Nowhere in the cited portions and the whole document does {dx_display} describe or reasonably suggest the above indicated features claimed in the amended independent claim 1. Therefore, the steps of {dx_display} are different from that of Applicant’s claimed subject matter. Additionally, a prima facie obviousness has not been established. Merely recitation of portions from prior art does not sustain the rejection of obviousness unless the prior art reasonably teaches and provides articulated reasoning with rational underpinning to support the legal conclusion of obviousness. Thus, based on the above, to the extent {dx_display} does not disclose, reasonably teach or suggest the features of the amended independent claim 1, and hence it is respectfully submitted that independent claim 1 is patentable over the cited prior art. Nor does {dx_display} motivate one of ordinary skill in the art to combine {dx_display} with another reference to arrive at the claimed invention. Reconsideration is respectfully requested.",
     )
 
     for n, txt in claims:
@@ -480,6 +604,7 @@ def generate_reply_docx(
     office_address: str = "THE PATENT OFFICE\nI.P.O BUILDING\nG.S.T.Road, Guindy\nChennai - [PIN]",
     dx_range: str = "D1-Dn",
     dx_disclosed_features: str = "",
+    prior_art_entries: Optional[List[Dict[str, str]]] = None,
     formal_reqs_rows: Optional[List[Tuple[str, str]]] = None,
     cs_background_text: str = "",
     cs_summary_text: str = "",
@@ -542,13 +667,16 @@ def generate_reply_docx(
             _placeholder(doc, f"[INSERT REPLY TO OBJECTION {i} HERE]")
     else:
         for obj in objections:
-            _heading(doc, f"SUBMISSION TO OBJECTION {obj.number}")
-            _obj_label(doc, obj.heading.upper() + ":")
+            h = obj.heading.upper()
+            if "REGARDING CLAIMS" in h:
+                _obj_label(doc, "REGARDING CLAIMS:")
+            else:
+                _heading(doc, f"SUBMISSION TO OBJECTION {obj.number}")
+                _obj_label(doc, obj.heading.upper() + ":")
             _blocktext(doc, obj.body)
             _gap(doc, 4)
             _reply_label(doc)
 
-            h = obj.heading.upper()
             if "INVENTIVE STEP" in h:
                 _add_inventive_step_reply_from_cs(
                     doc,
@@ -570,6 +698,7 @@ def generate_reply_docx(
                     amended_claims,
                     dx_range=dx_range,
                     dx_disclosed_features=dx_disclosed_features,
+                    prior_art_entries=prior_art_entries,
                 )
             elif "SUFFICIENCY" in h:
                 _placeholder(doc, "[INSERT ABSTRACT / SUFFICIENCY COMPLIANCE STATEMENT HERE]")
@@ -584,8 +713,6 @@ def generate_reply_docx(
             _gap(doc, 8)
 
     if not has_regarding_claims_objection and _extract_numbered_claims(amended_claims):
-        next_no = (objections[-1].number + 1) if objections else 1
-        _heading(doc, f"SUBMISSION TO OBJECTION {next_no}")
         _obj_label(doc, "REGARDING CLAIMS:")
         _reply_label(doc)
         _add_regarding_claims_block(
@@ -593,6 +720,7 @@ def generate_reply_docx(
             amended_claims,
             dx_range=dx_range,
             dx_disclosed_features=dx_disclosed_features,
+            prior_art_entries=prior_art_entries,
         )
         _gap(doc, 8)
 
@@ -614,4 +742,5 @@ def generate_reply_docx(
     _para(doc, "Enclosure:")
     _placeholder(doc, "1. [List enclosures here]")
 
+    _justify_document(doc)
     return doc

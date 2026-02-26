@@ -1053,6 +1053,51 @@ def _find_first_match(patterns: List[str], text: str, start: int = 0):
     return best
 
 
+def _clean_cs_section_text(section: str) -> str:
+    text = (section or "").replace("\u00ad", "")
+    text = re.sub(r"\(cid:\d+\)", "", text)
+    text = text.replace("\r", "\n")
+
+    cleaned_lines: List[str] = []
+    for raw in text.splitlines():
+        line = re.sub(r"[ \t]+", " ", raw or "").strip()
+        if not line:
+            if cleaned_lines and cleaned_lines[-1]:
+                cleaned_lines.append("")
+            continue
+
+        if re.match(r"^Page\s+\d+\s+of\s+\d+$", line, re.I):
+            continue
+        if re.match(r"^\d+\s*\|\s*Page\b", line, re.I):
+            continue
+        if re.match(r"^Page\s+\d+$", line, re.I):
+            continue
+        if re.match(r"^THE\s+PATENT\s+OFFICE$", line, re.I):
+            continue
+        if re.match(r"^[\[\(]?\d{1,4}[\]\)]?$", line):
+            continue
+
+        # Remove paragraph/line numbering prefixes from CS OCR.
+        line = re.sub(r"^\[\d{3,5}\]\s*", "", line)
+        line = re.sub(r"^\(?\d{1,3}\)?\s+(?=[A-Za-z])", "", line)
+        line = re.sub(r"^\(?\d{1,3}\)?[.:]\s*", "", line)
+        line = re.sub(r"\s{2,}", " ", line).strip()
+
+        if not line:
+            continue
+        cleaned_lines.append(line)
+
+    out_lines: List[str] = []
+    for ln in cleaned_lines:
+        if ln == "" and out_lines and out_lines[-1] == "":
+            continue
+        out_lines.append(ln)
+
+    cleaned = "\n".join(out_lines).strip(" \n\t:-")
+    cleaned = re.sub(r"\n{3,}", "\n\n", cleaned)
+    return cleaned
+
+
 def _extract_cs_section(text: str, heading_patterns: List[str], stop_patterns: List[str]) -> str:
     found = _find_first_match(heading_patterns, text)
     if not found:
@@ -1066,10 +1111,7 @@ def _extract_cs_section(text: str, heading_patterns: List[str], stop_patterns: L
         section_end = stop[0]
 
     section = text[section_start:section_end]
-    section = section.replace("\u00ad", "")
-    section = re.sub(r"\(cid:\d+\)", "", section)
-    section = re.sub(r"\n{3,}", "\n\n", section).strip(" \n\t:-")
-    return section
+    return _clean_cs_section_text(section)
 
 
 def extract_cs_background_and_summary(path: str) -> Tuple[str, str]:
