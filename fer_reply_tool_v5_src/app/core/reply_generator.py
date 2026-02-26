@@ -773,6 +773,8 @@ def generate_reply_docx(
                 _placeholder(doc, "[INSERT CLARITY RESPONSE - EXPLAIN HOW AMENDMENTS ADDRESS EACH POINT]")
             elif "DEFINITIVENESS" in h:
                 _placeholder(doc, "[INSERT DEFINITIVENESS RESPONSE (Sec 10(4)(c), 10(5)) HERE]")
+            elif "SCOPE" in h:
+                _placeholder(doc, "[INSERT SCOPE RESPONSE - EXPLAIN HOW CLAIMS DEFINE CLEAR BOUNDARIES]")
             elif "OTHERS" in h:
                 _placeholder(doc, "[INSERT RESPONSE TO OTHER REQUIREMENTS HERE]")
             else:

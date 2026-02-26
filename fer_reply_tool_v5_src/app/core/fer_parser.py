@@ -837,6 +837,8 @@ def _extract_prior_arts(text: str) -> List[PriorArt]:
 def _normalize_heading(raw: str) -> str:
     h = re.sub(r"\s+", " ", (raw or "").upper()).strip()
     h = h.replace("NON-PATENTABILITY", "NON PATENTABILITY")
+    if re.fullmatch(r"SCOPE(?:\s+OF(?:\s+THE)?\s+CLAIMS?)?", h, re.I):
+        return "SCOPE"
     if h.startswith("OTHER REQUIREMENT") or h.startswith("OTHERS REQUIREMENT"):
         return "OTHERS REQUIREMENTS"
     return h
@@ -853,7 +855,8 @@ def _split_objections(text: str) -> List[Tuple[str, str]]:
 
     heading_pat = (
         r"(?P<head>NOVELTY|INVENTIVE STEP|NON[\s\-]PATENTABILITY|REGARDING CLAIMS|"
-        r"SUFFICIENCY OF DISCLOSURE|CLARITY AND CONCISENESS|DEFINITIVENESS|OTHERS?\s+REQUIREMENTS?)"
+        r"SUFFICIENCY OF DISCLOSURE|CLARITY AND CONCISENESS|DEFINITIVENESS|"
+        r"SCOPE(?:\s+OF(?:\s+THE)?\s+CLAIMS?)?|OTHERS?\s+REQUIREMENTS?)"
     )
     splitter_strict = rf"(?im)^\s*(?:\(\d+\)\.)?\s*/?\s*{heading_pat}\s*[:\-]?\s*$"
     splitter_fallback = rf"(?i){heading_pat}\s*:"
