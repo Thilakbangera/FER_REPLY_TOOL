@@ -810,4 +810,6 @@ def generate_reply_docx(
     _placeholder(doc, "1. [List enclosures here]")
 
     _justify_document(doc)
+    if doc.paragraphs:
+        doc.paragraphs[0].paragraph_format.alignment = WD_ALIGN_PARAGRAPH.RIGHT
     return doc

@@ -28,6 +28,14 @@ def clean_prior_art_text(text: str) -> str:
     t = (text or "").replace("\u00ad", "")
     t = re.sub(r"\(cid:\d+\)", "", t)
     t = re.sub(r"https?://\S+|www\.\S+", "", t, flags=re.I)
+    t = re.sub(
+        r"\b\d{1,2}/\d{1,2}/\d{2,4},?\s+\d{1,2}:\d{2}\s*(?:AM|PM)\s+Espacenet\s*[–-]\s*search\s+results\b",
+        " ",
+        t,
+        flags=re.I,
+    )
+    t = re.sub(r"\bEspacenet\s*[–-]\s*search\s+results\b", " ", t, flags=re.I)
+    t = re.sub(r"\bsearch\s+results\b", " ", t, flags=re.I)
     t = re.sub(r"(\w)-\s*\n\s*(\w)", r"\1\2", t)
 
     lines: List[str] = []
@@ -69,6 +77,10 @@ def _is_noise_line(line: str) -> bool:
     s = (line or "").strip()
     if not s:
         return True
+    if re.search(r"\bsearch\s+results\b", s, re.I):
+        return True
+    if re.search(r"\bEspacenet\b", s, re.I):
+        return True
     if re.search(r"https?://|www\.|espacenet\.com", s, re.I):
         return True
     if re.fullmatch(r"Page\s+\d+\s+of\s+\d+", s, re.I):
@@ -80,6 +92,8 @@ def _is_noise_line(line: str) -> bool:
     if re.fullmatch(r"[A-Z]{1,3}\d{5,}[A-Z0-9]*", s):
         return True
     if re.fullmatch(r"\d{2,4}[/-]\d{2}[/-]\d{2,4}", s):
+        return True
+    if re.search(r"\b\d{1,2}:\d{2}\s*(?:AM|PM)\b", s, re.I):
         return True
     if re.fullmatch(r"THE\s+PATENT\s+OFFICE", s, re.I):
         return True
@@ -124,10 +138,27 @@ def _is_section_heading(line: str) -> bool:
 
 
 def _trim_words(text: str, max_words: int = _MAX_ABSTRACT_WORDS) -> str:
-    words = re.findall(r"\S+", text or "")
+    raw = re.sub(r"\s+", " ", (text or "")).strip()
+    words = re.findall(r"\S+", raw)
     if len(words) <= max_words:
-        return (text or "").strip()
-    return " ".join(words[:max_words]).strip()
+        return raw
+
+    cut = " ".join(words[:max_words]).strip()
+    if cut.endswith((".", "!", "?")):
+        return cut
+
+    tail_words = words[max_words:max_words + 80]
+    if tail_words:
+        tail_probe = " ".join(tail_words).strip()
+        m = re.search(r"[.!?](?:\s|$)", tail_probe)
+        if m:
+            return f"{cut} {tail_probe[:m.end()].strip()}".strip()
+
+    back_cut = max(cut.rfind("."), cut.rfind("!"), cut.rfind("?"))
+    if back_cut >= int(len(cut) * 0.35):
+        return cut[:back_cut + 1].strip()
+
+    return f"{cut}."
 
 
 def _polish_abstract_tail(text: str) -> str:
@@ -182,7 +213,10 @@ def _collect_candidate(lines: List[str], start_idx: int, inline_text: str = "") 
         if _is_section_heading(line) and len(parts) >= 2:
             break
         parts.append(line)
-        if len(" ".join(parts).split()) >= _MAX_ABSTRACT_WORDS:
+        word_count = len(" ".join(parts).split())
+        if word_count >= _MAX_ABSTRACT_WORDS and re.search(r"[.!?]\s*$", " ".join(parts).strip()):
+            break
+        if word_count >= (_MAX_ABSTRACT_WORDS + 90):
             break
 
     candidate = " ".join(parts).strip()
