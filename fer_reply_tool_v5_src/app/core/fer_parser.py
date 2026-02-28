@@ -5,6 +5,7 @@ from dataclasses import asdict, dataclass
 from typing import Dict, List, Tuple
 
 import pdfplumber
+from docx import Document as DocxDocument
 
 
 @dataclass
@@ -43,6 +44,20 @@ def read_pdf_text(path: str) -> str:
     with pdfplumber.open(path) as pdf:
         for p in pdf.pages:
             chunks.append(p.extract_text() or "")
+    return "\n".join(chunks)
+
+
+def read_docx_text(path: str) -> str:
+    chunks: List[str] = []
+    doc = DocxDocument(path)
+    for p in doc.paragraphs:
+        chunks.append((p.text or "").strip())
+    for table in doc.tables:
+        for row in table.rows:
+            for cell in row.cells:
+                txt = (cell.text or "").strip()
+                if txt:
+                    chunks.append(txt)
     return "\n".join(chunks)
 
 
@@ -982,6 +997,64 @@ def extract_title_from_cs_pdf(path: str) -> str:
     return ""
 
 
+def extract_title_from_cs_docx(path: str) -> str:
+    raw = read_docx_text(path)
+    if not raw:
+        return ""
+
+    lines = [ln.strip() for ln in raw.splitlines()]
+
+    def _clean_title_line(s: str) -> str:
+        x = (s or "").strip()
+        x = re.sub(r"\(cid:\d+\)", "", x)
+        x = re.sub(r"^\[\d{1,4}\]\s*", "", x)
+        x = re.sub(r"^\d+\s+", "", x)
+        x = re.sub(r"\s+", " ", x).strip(" :-")
+        return x
+
+    stop_pat = re.compile(
+        r"\b(NAME\s+AND\s+ADDRESS\s+OF\s+THE\s+APPLICANT|APPLICANTS?|APPLICANT|NATIONALITY|ADDRESS|"
+        r"TECHNICAL\s+FIELD|FIELD\s+OF\s+INVENTION|BACKGROUND|OBJECT\s+OF\s+THE\s+INVENTION|"
+        r"SUMMARY\s+OF\s+THE\s+INVENTION|DETAILED\s+DESCRIPTION|CLAIMS?|ABSTRACT)\b",
+        re.I,
+    )
+
+    for i, ln in enumerate(lines):
+        if not re.search(r"\bTITLE\s+OF\s+THE\s+INVENTION\b", ln, re.I):
+            continue
+
+        inline = _clean_title_line(re.sub(r"^.*?\bTITLE\s+OF\s+THE\s+INVENTION\b\s*[:\-]?\s*", "", ln, flags=re.I))
+        if inline and not stop_pat.search(inline):
+            return inline
+
+        parts: List[str] = []
+        for nxt in lines[i + 1:i + 8]:
+            s = _clean_title_line(nxt)
+            if not s:
+                if parts:
+                    break
+                continue
+            if re.match(r"^Page\s+\d+\s+of\s+\d+$", s, re.I):
+                continue
+            if stop_pat.search(s):
+                break
+            if re.fullmatch(r"FORM\s*\d+.*", s, re.I):
+                continue
+            parts.append(s)
+            if len(" ".join(parts)) >= 140:
+                break
+
+        title = re.sub(r"\s+", " ", " ".join(parts)).strip(" :-")
+        if title:
+            return title
+
+    t = _clean(raw)
+    m2 = re.search(r"(?:^|\n)\s*Title\s*[:\-]\s*([A-Za-z][A-Za-z0-9 &/\',.-]{5,})", t, re.I)
+    if m2:
+        return m2.group(1).strip()
+    return ""
+
+
 def extract_applicant_from_cs_pdf(path: str) -> str:
     raw = read_pdf_text(path)
     if not raw:
@@ -1038,6 +1111,64 @@ def extract_applicant_from_cs_pdf(path: str) -> str:
     by_table = _extract_applicant_from_cs_tables(path)
     if by_table:
         return by_table
+
+    fallback = _extract_applicant_from_text(t)
+    candidate = _pick_best_applicant_name(fallback)
+    return candidate
+
+
+def extract_applicant_from_cs_docx(path: str) -> str:
+    raw = read_docx_text(path)
+    if not raw:
+        return ""
+
+    by_label = _extract_applicant_from_labeled_block(raw)
+    if by_label:
+        return by_label
+
+    t = _clean(raw)
+    lines = [ln.strip() for ln in raw.splitlines()]
+    start = None
+
+    for i, ln in enumerate(lines):
+        if re.search(r"NAME\s+AND\s+ADDRESS\s+OF\s+THE\s+APPLICANT", ln, re.I):
+            start = i
+            break
+
+    if start is not None:
+        parts: List[str] = []
+        for ln in lines[start + 1:start + 20]:
+            s = re.sub(r"\(cid:\d+\)", "", ln or "").strip(" /:;-")
+            if not s:
+                if parts:
+                    break
+                continue
+            if re.match(r"^Page\s+\d+\s+of\s+\d+$", s, re.I):
+                continue
+            if re.search(r"\bName\s+Nationality\s+Address\b", s, re.I):
+                continue
+            if re.search(r"\bThe\s+following\s+specification\b", s, re.I):
+                break
+            if not re.search(r"[A-Za-z]", s):
+                continue
+            if re.search(
+                r"\b(NAME\s+AND\s+ADDRESS|NATIONALITY|TITLE\s+OF\s+THE\s+INVENTION|FIELD\s+OF\s+INVENTION|BACKGROUND)\b",
+                s,
+                re.I,
+            ):
+                break
+            parts.append(s)
+            if re.search(
+                r"\b(?:Private\s+Limited|Public\s+Limited|Pvt\.?\s*Ltd\.?|Limited|Ltd\.?|LLP|Inc\.?|Corporation|Corp\.?|Company)\b",
+                " ".join(parts),
+                re.I,
+            ):
+                break
+
+        raw_block = " ".join(parts)
+        candidate = _pick_best_applicant_name(raw_block)
+        if candidate:
+            return candidate
 
     fallback = _extract_applicant_from_text(t)
     candidate = _pick_best_applicant_name(fallback)
@@ -1117,8 +1248,7 @@ def _extract_cs_section(text: str, heading_patterns: List[str], stop_patterns: L
     return _clean_cs_section_text(section)
 
 
-def extract_cs_background_and_summary(path: str) -> Tuple[str, str]:
-    text = read_pdf_text(path) or ""
+def _extract_cs_background_and_summary_from_text(text: str) -> Tuple[str, str]:
     if not text.strip():
         return "", ""
 
@@ -1151,6 +1281,14 @@ def extract_cs_background_and_summary(path: str) -> Tuple[str, str]:
     background = _extract_cs_section(text, background_patterns, background_stop_patterns)
     summary = _extract_cs_section(text, summary_patterns, summary_stop_patterns)
     return background, summary
+
+
+def extract_cs_background_and_summary(path: str) -> Tuple[str, str]:
+    return _extract_cs_background_and_summary_from_text(read_pdf_text(path) or "")
+
+
+def extract_cs_background_and_summary_from_docx(path: str) -> Tuple[str, str]:
+    return _extract_cs_background_and_summary_from_text(read_docx_text(path) or "")
 
 
 def parse_fer_pdf(path: str) -> FerParseResult:

@@ -3,6 +3,7 @@ from __future__ import annotations
 import re
 from typing import List
 import pdfplumber
+from docx import Document as DocxDocument
 
 
 def read_pdf_text(path: str) -> str:
@@ -14,6 +15,72 @@ def read_pdf_text(path: str) -> str:
     return "\n".join(chunks)
 
 
+def read_docx_text(path: str) -> str:
+    doc = DocxDocument(path)
+    chunks: List[str] = []
+    auto_num = 1
+
+    for p in _iter_docx_paragraphs(doc):
+        text = (p.text or "").strip()
+        if not text:
+            continue
+
+        # Keep explicit claim numbering as-is.
+        if re.match(r"^\s*\d+[\.\):]\s*", text):
+            chunks.append(text)
+            m_no = re.match(r"^\s*(\d+)[\.\):]\s*", text)
+            if m_no:
+                auto_num = max(auto_num, int(m_no.group(1)) + 1)
+            continue
+
+        # Word auto-numbered lists often store number metadata, not literal text.
+        if _is_numbered_list_paragraph(p):
+            chunks.append(f"{auto_num}. {text}")
+            auto_num += 1
+            continue
+
+        chunks.append(text)
+
+    return "\n".join(chunks)
+
+
+def _iter_docx_paragraphs(doc: DocxDocument):
+    for p in doc.paragraphs:
+        yield p
+    for table in doc.tables:
+        yield from _iter_table_paragraphs(table)
+
+
+def _iter_table_paragraphs(table):
+    for row in table.rows:
+        for cell in row.cells:
+            for p in cell.paragraphs:
+                yield p
+            for nested in cell.tables:
+                yield from _iter_table_paragraphs(nested)
+
+
+def _is_numbered_list_paragraph(paragraph) -> bool:
+    try:
+        ppr = paragraph._p.pPr  # type: ignore[attr-defined]
+        if ppr is not None and ppr.numPr is not None:
+            return True
+    except Exception:
+        pass
+
+    style_name = ""
+    try:
+        style_name = (paragraph.style.name or "").strip().lower()
+    except Exception:
+        style_name = ""
+
+    if "list" in style_name and ("number" in style_name or "num" in style_name):
+        return True
+    if "numbered" in style_name:
+        return True
+    return False
+
+
 def _clean(t: str) -> str:
     t = t.replace("\u00ad", "")
     t = re.sub(r"\(cid:\d+\)", "", t)
@@ -22,14 +89,14 @@ def _clean(t: str) -> str:
     return t.strip()
 
 
-def extract_amended_claims_from_pdf(path: str) -> str:
+def _extract_amended_claims_from_text(raw_text: str) -> str:
     """
-    Extract claim text from an amended-claims PDF.
+    Extract claim text from amended-claims text.
     - Prefer start at heading variants: WE CLAIM / CLAIMS / REGARDING CLAIMS
     - Fallback to first numbered claim if heading is missing
     - End at FER reply section markers if present
     """
-    t = _clean(read_pdf_text(path))
+    t = _clean(raw_text or "")
     if not t:
         return ""
 
@@ -62,7 +129,7 @@ def extract_amended_claims_from_pdf(path: str) -> str:
     claims_block = tail[:end].strip()
 
     # Claims should normally start with "1." / "1)" / "Claim 1".
-    start_pat = r"(?im)^\s*(?:1[\.\):]\s+|Claim\s*1\b)"
+    start_pat = r"(?im)^\s*(?:1[\.\):]\s*|Claim\s*1\b)"
     m3 = re.search(start_pat, claims_block)
     if m3:
         claims_block = claims_block[m3.start():].strip()
@@ -78,3 +145,11 @@ def extract_amended_claims_from_pdf(path: str) -> str:
             claims_block = tail2[:end2].strip()
 
     return claims_block
+
+
+def extract_amended_claims_from_pdf(path: str) -> str:
+    return _extract_amended_claims_from_text(read_pdf_text(path))
+
+
+def extract_amended_claims_from_docx(path: str) -> str:
+    return _extract_amended_claims_from_text(read_docx_text(path))

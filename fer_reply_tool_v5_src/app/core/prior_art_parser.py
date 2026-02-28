@@ -4,6 +4,7 @@ import re
 from typing import List
 
 import pdfplumber
+from docx import Document as DocxDocument
 
 # Keep this high so full abstracts are preserved, including multi-page abstracts.
 _MAX_ABSTRACT_WORDS = 1200
@@ -24,6 +25,20 @@ def normalize_prior_art_label(label: str, index: int) -> str:
     if re.fullmatch(r"D\d{1,3}", raw):
         return raw
     return f"D{index}"
+
+
+def read_docx_text(path: str) -> str:
+    chunks: List[str] = []
+    doc = DocxDocument(path)
+    for p in doc.paragraphs:
+        chunks.append((p.text or "").strip())
+    for table in doc.tables:
+        for row in table.rows:
+            for cell in row.cells:
+                txt = (cell.text or "").strip()
+                if txt:
+                    chunks.append(txt)
+    return "\n".join(chunks)
 
 
 def is_scanned_prior_art_pdf(path: str, sample_pages: int = 10) -> bool:
@@ -531,13 +546,8 @@ def _extract_best_paragraph(lines: List[str]) -> str:
     return _trim_words(best, min(_MAX_ABSTRACT_WORDS, 360))
 
 
-def extract_prior_art_abstract_from_pdf(path: str) -> str:
-    page_texts: List[str] = []
-    with pdfplumber.open(path) as pdf:
-        for page in pdf.pages:
-            page_texts.append(page.extract_text() or "")
-
-    lines = _build_lines("\n\n".join(page_texts))
+def _extract_prior_art_abstract_from_text(raw_text: str) -> str:
+    lines = _build_lines(raw_text or "")
     if not lines:
         return ""
 
@@ -548,3 +558,15 @@ def extract_prior_art_abstract_from_pdf(path: str) -> str:
         abstract = _trim_words(" ".join([ln for ln in lines if ln]), 160)
 
     return clean_prior_art_text(abstract)
+
+
+def extract_prior_art_abstract_from_pdf(path: str) -> str:
+    page_texts: List[str] = []
+    with pdfplumber.open(path) as pdf:
+        for page in pdf.pages:
+            page_texts.append(page.extract_text() or "")
+    return _extract_prior_art_abstract_from_text("\n\n".join(page_texts))
+
+
+def extract_prior_art_abstract_from_docx(path: str) -> str:
+    return _extract_prior_art_abstract_from_text(read_docx_text(path))

@@ -16,14 +16,18 @@ from app.core.fer_parser import (
     extract_formal_requirements_block,
     extract_formal_requirements_rows_from_pdf,
     extract_title_from_cs_pdf,
+    extract_title_from_cs_docx,
     extract_applicant_from_cs_pdf,
+    extract_applicant_from_cs_docx,
     extract_cs_background_and_summary,
+    extract_cs_background_and_summary_from_docx,
 )
 from app.core.reply_generator import generate_reply_docx
-from app.core.claims_parser import extract_amended_claims_from_pdf
+from app.core.claims_parser import extract_amended_claims_from_pdf, extract_amended_claims_from_docx
 from app.core.prior_art_parser import (
     clean_prior_art_text,
     extract_prior_art_abstract_from_pdf,
+    extract_prior_art_abstract_from_docx,
     is_scanned_prior_art_pdf,
     normalize_prior_art_label,
 )
@@ -56,6 +60,16 @@ def _safe_file_suffix(name: str, fallback: str = ".bin") -> str:
 
 def _is_safe_ext(ext: str) -> bool:
     return bool(ext) and len(ext) <= 8 and ext.startswith(".") and ext[1:].isalnum()
+
+
+def _ensure_supported_doc_ext(name: str, field_name: str) -> str:
+    ext = _safe_file_suffix(name or "", fallback="")
+    if ext in {".pdf", ".docx"}:
+        return ext
+    raise HTTPException(
+        status_code=422,
+        detail=f"{field_name} supports only PDF or DOCX files.",
+    )
 
 
 async def _save_upload_to_temp(upload: UploadFile, suffix: str = ".bin") -> str:
@@ -103,9 +117,9 @@ async def parse_fer(fer_pdf: UploadFile = File(...)):
 @app.post("/api/generate_reply")
 async def generate_reply(
     fer_pdf: UploadFile = File(...),
-    cs_pdf: UploadFile = File(...),                      # Complete Specification PDF (required)
-    amended_claims_pdf: Optional[UploadFile] = File(None),  # Amended Claims PDF (required)
-    prior_art_pdfs: Optional[List[UploadFile]] = File(None),
+    cs_pdf: UploadFile = File(...),                      # Complete Specification PDF/DOCX (required)
+    amended_claims_pdf: Optional[UploadFile] = File(None),  # Amended Claims PDF/DOCX (required)
+    prior_art_pdfs: Optional[List[UploadFile]] = File(None),  # Prior-art PDF/DOCX uploads
     prior_art_diagrams: Optional[List[UploadFile]] = File(None),
     title: str = Form(""),  # kept for backward compatibility; CS title is authoritative
     agent: Optional[str] = Form(None),
@@ -124,10 +138,13 @@ async def generate_reply(
     prior_art_diagram_paths: List[str] = []
     try:
         fer_path = await _save_upload_to_temp(fer_pdf, suffix=".pdf")
-        cs_path = await _save_upload_to_temp(cs_pdf, suffix=".pdf")
+        cs_ext = _ensure_supported_doc_ext(cs_pdf.filename or "", "CS document")
+        cs_path = await _save_upload_to_temp(cs_pdf, suffix=cs_ext)
 
+        claims_ext = ""
         if amended_claims_pdf:
-            claims_path = await _save_upload_to_temp(amended_claims_pdf, suffix=".pdf")
+            claims_ext = _ensure_supported_doc_ext(amended_claims_pdf.filename or "", "Amended Claims document")
+            claims_path = await _save_upload_to_temp(amended_claims_pdf, suffix=claims_ext)
 
         fer = parse_fer_pdf(fer_path)
         fer_raw = read_pdf_text(fer_path)
@@ -136,21 +153,33 @@ async def generate_reply(
         formal_rows = extract_formal_requirements_rows_from_pdf(fer_path)
 
         # Title must come from CS (cover sheet).
-        cs_title = extract_title_from_cs_pdf(cs_path)
+        if cs_ext == ".pdf":
+            cs_title = extract_title_from_cs_pdf(cs_path)
+        else:
+            cs_title = extract_title_from_cs_docx(cs_path)
         if not cs_title:
             cs_title = fer.title or ""
 
         # Applicant must come from CS when available.
-        cs_applicant = extract_applicant_from_cs_pdf(cs_path)
+        if cs_ext == ".pdf":
+            cs_applicant = extract_applicant_from_cs_pdf(cs_path)
+        else:
+            cs_applicant = extract_applicant_from_cs_docx(cs_path)
         if cs_applicant:
             fer.applicant = cs_applicant
 
-        cs_background, cs_summary = extract_cs_background_and_summary(cs_path)
+        if cs_ext == ".pdf":
+            cs_background, cs_summary = extract_cs_background_and_summary(cs_path)
+        else:
+            cs_background, cs_summary = extract_cs_background_and_summary_from_docx(cs_path)
 
         # Claims: PDF only (no text fallback)
         claims_text = ""
         if claims_path:
-            claims_text = extract_amended_claims_from_pdf(claims_path)
+            if claims_ext == ".pdf":
+                claims_text = extract_amended_claims_from_pdf(claims_path)
+            else:
+                claims_text = extract_amended_claims_from_docx(claims_path)
 
         prior_art_entries: List[Dict[str, str]] = []
         mode = (prior_art_input_mode or prior_art_mode or "pdf").strip().lower()
@@ -219,16 +248,20 @@ async def generate_reply(
                 source_name = ""
 
                 if upload is not None:
-                    prior_path = await _save_upload_to_temp(upload, suffix=".pdf")
-                    prior_art_paths.append(prior_path)
                     source_name = clean_prior_art_text(upload.filename or "")
-                    if is_scanned_prior_art_pdf(prior_path):
-                        display_name = source_name or label
-                        raise HTTPException(
-                            status_code=422,
-                            detail=f"{display_name} is a scanned copy (image-only PDF). Please provide text copy PDF.",
-                        )
-                    abstract = extract_prior_art_abstract_from_pdf(prior_path)
+                    prior_ext = _ensure_supported_doc_ext(upload.filename or "", f"Prior art file {source_name or label}")
+                    prior_path = await _save_upload_to_temp(upload, suffix=prior_ext)
+                    prior_art_paths.append(prior_path)
+                    if prior_ext == ".pdf":
+                        if is_scanned_prior_art_pdf(prior_path):
+                            display_name = source_name or label
+                            raise HTTPException(
+                                status_code=422,
+                                detail=f"{display_name} is a scanned copy (image-only PDF). Please provide text copy PDF.",
+                            )
+                        abstract = extract_prior_art_abstract_from_pdf(prior_path)
+                    else:
+                        abstract = extract_prior_art_abstract_from_docx(prior_path)
 
                 has_diagram = bool(row.get("has_diagram", False)) or bool(diagram)
                 diagram_upload = next(dia_iter, None) if has_diagram else None
