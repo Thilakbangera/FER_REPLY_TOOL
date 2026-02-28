@@ -5,10 +5,7 @@ import streamlit as st
 
 st.set_page_config(page_title="FER Reply Generator", page_icon="DOC", layout="wide")
 
-BACKEND = st.sidebar.text_input("Backend URL", "https://fer-reply-tool.onrender.com")
-BACKEND = BACKEND.strip().rstrip("/")
-if BACKEND and not BACKEND.startswith(("http://", "https://")):
-    BACKEND = "https://" + BACKEND
+BACKEND = st.sidebar.text_input("Backend URL", "http://127.0.0.1:8000")
 
 st.title("FER Reply Generator")
 st.caption("Upload FER PDF + CS PDF + Amended Claims PDF to auto-generate the reply DOCX with objections pre-filled.")
@@ -23,6 +20,20 @@ prior_arts_entries = []
 prior_art_pdf_uploads = []
 prior_art_diagram_uploads = []
 prior_art_complete = True
+
+
+def _error_message(resp: requests.Response) -> str:
+    try:
+        payload = resp.json()
+        if isinstance(payload, dict):
+            detail = payload.get("detail", "")
+            if isinstance(detail, str) and detail.strip():
+                return detail.strip()
+    except Exception:
+        pass
+    text = (resp.text or "").strip()
+    return text or f"Request failed with status {resp.status_code}"
+
 
 with col_left:
     st.markdown("### 1) FER PDF *(required)*")
@@ -131,7 +142,7 @@ with col1:
                 files={"fer_pdf": ("fer.pdf", fer_file.getvalue(), "application/pdf")},
             )
         if r.status_code != 200:
-            st.error(f"Error {r.status_code}: {r.text}")
+            st.error(_error_message(r))
         else:
             st.json(r.json())
 
@@ -186,7 +197,7 @@ with col2:
             r = requests.post(f"{BACKEND}/api/generate_reply", files=files, data=data)
 
         if r.status_code != 200:
-            st.error(f"Error {r.status_code}: {r.text}")
+            st.error(_error_message(r))
         else:
             st.success("Generated")
             st.download_button(

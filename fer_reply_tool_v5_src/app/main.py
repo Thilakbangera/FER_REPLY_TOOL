@@ -6,7 +6,7 @@ import os
 import tempfile
 from typing import Dict, List, Optional
 
-from fastapi import FastAPI, UploadFile, File, Form
+from fastapi import FastAPI, UploadFile, File, Form, HTTPException
 from fastapi.responses import JSONResponse, StreamingResponse
 from fastapi.middleware.cors import CORSMiddleware
 
@@ -24,6 +24,7 @@ from app.core.claims_parser import extract_amended_claims_from_pdf
 from app.core.prior_art_parser import (
     clean_prior_art_text,
     extract_prior_art_abstract_from_pdf,
+    is_scanned_prior_art_pdf,
     normalize_prior_art_label,
 )
 
@@ -220,8 +221,14 @@ async def generate_reply(
                 if upload is not None:
                     prior_path = await _save_upload_to_temp(upload, suffix=".pdf")
                     prior_art_paths.append(prior_path)
-                    abstract = extract_prior_art_abstract_from_pdf(prior_path)
                     source_name = clean_prior_art_text(upload.filename or "")
+                    if is_scanned_prior_art_pdf(prior_path):
+                        display_name = source_name or label
+                        raise HTTPException(
+                            status_code=422,
+                            detail=f"{display_name} is a scanned copy (image-only PDF). Please provide text copy PDF.",
+                        )
+                    abstract = extract_prior_art_abstract_from_pdf(prior_path)
 
                 has_diagram = bool(row.get("has_diagram", False)) or bool(diagram)
                 diagram_upload = next(dia_iter, None) if has_diagram else None

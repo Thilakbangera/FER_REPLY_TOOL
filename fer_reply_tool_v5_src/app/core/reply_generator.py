@@ -546,6 +546,51 @@ def _add_inventive_step_reply_from_cs(
         _placeholder(doc, "[INSERT 'SUMMARY OF THE INVENTION' FROM CS HERE]")
 
 
+_NON_PATENTABILITY_3K_PARA = (
+    "Applicant respectfully submits that the subject matter of Claims 1-10 does not fall within the exclusion of "
+    "Section 3(k) of the Patents Act, 1970. The claimed invention represents merely a sequence of algorithmic steps "
+    "executed on a conventional computer is inconsistent with the express structural and functional limitations recited "
+    "in the claims and fully supported by the Complete Specification. The components in the Applicant claimed invention "
+    "are linked to provide a significant technical effect and provides the technical solution to problem. Hence, "
+    "applicant preys the Hon. Controller to waive the objection under the section 3(k)."
+)
+
+_NON_PATENTABILITY_3M_PARA = (
+    "The Applicant further submits that the claims are anchored to specific hardware, do not define gameplay rules or "
+    "mental judgments, and are therefore distinguishable from examples falling under Section 3(m). The invention "
+    "addresses a technical problem of multi-device data coordination and secure ranking execution, not a method of "
+    "playing a game or performing a mental act. All claimed steps are executed by dedicated hardware components, and "
+    "the claimed system can be employed in varied ranking or evaluation contexts beyond gaming, underscoring its "
+    "industrial applicability. Hence, the applicant prays the Hon. Controller to waive the objection under section 3(m)."
+)
+
+
+def _contains_section_clause(text: str, clause: str) -> bool:
+    c = (clause or "").strip().lower()
+    if c not in {"k", "m"}:
+        return False
+
+    raw = " ".join((text or "").split()).lower()
+    if not raw:
+        return False
+
+    sec_pat = rf"\bsection\s*3\s*(?:\(\s*{c}\s*\)|{c})(?=\W|$)"
+    clause_pat = rf"\bclause\s*\(\s*{c}\s*\)\s*of\s*section\s*\(?\s*3\s*\)?(?=\W|$)"
+    short_pat = rf"(?<!\d)3\s*(?:\(\s*{c}\s*\)|{c})(?=\W|$)"
+    return bool(re.search(sec_pat, raw) or re.search(clause_pat, raw) or re.search(short_pat, raw))
+
+
+def _add_non_patentability_static_paras(doc: Document, objection_text: str) -> bool:
+    added = False
+    if _contains_section_clause(objection_text, "k"):
+        _para(doc, _NON_PATENTABILITY_3K_PARA)
+        added = True
+    if _contains_section_clause(objection_text, "m"):
+        _para(doc, _NON_PATENTABILITY_3M_PARA)
+        added = True
+    return added
+
+
 _FORMAL_CATEGORY_PATTERNS = [
     ("Form 28", r"Form\s*28\b"),
     ("Form 18", r"Form\s*18\b"),
@@ -838,6 +883,7 @@ def generate_reply_docx(
 
     objections = fer.objections or []
     has_regarding_claims_objection = False
+    regarding_claims_content_rendered = False
 
     if not objections:
         for i in range(1, 7):
@@ -863,23 +909,43 @@ def generate_reply_docx(
                     cs_background_text=cs_background_text,
                     cs_summary_text=cs_summary_text,
                 )
-                _placeholder(doc, "[EXPLAIN HOW AMENDED CLAIM OVERCOMES D1, D2, etc.]")
-                _placeholder(doc, "[ADD INSTANT INVENTION vs PRIOR ART TABLE IF NEEDED]")
+                if _extract_numbered_claims(amended_claims):
+                    _add_regarding_claims_block(
+                        doc,
+                        amended_claims,
+                        dx_range=dx_range,
+                        dx_disclosed_features=dx_disclosed_features,
+                        prior_art_entries=prior_art_entries,
+                    )
+                    regarding_claims_content_rendered = True
+                    has_regarding_claims_objection = True
+                else:
+                    _placeholder(doc, "[EXPLAIN HOW AMENDED CLAIM OVERCOMES D1, D2, etc.]")
+                    _placeholder(doc, "[ADD INSTANT INVENTION vs PRIOR ART TABLE IF NEEDED]")
             elif "NOVELTY" in h:
                 _placeholder(doc, "[INSERT NOVELTY ARGUMENT AGAINST CITED PRIOR ART HERE]")
                 _placeholder(doc, "[EXPLAIN DISTINGUISHING FEATURES OF AMENDED CLAIMS HERE]")
             elif "NON PATENTABILITY" in h:
-                _placeholder(doc, "[INSERT SECTION 3(f)/3(o)/3(k) ARGUMENT HERE]")
+                non_pat_text = f"{obj.heading}\n{obj.body}"
+                if not _add_non_patentability_static_paras(doc, non_pat_text):
+                    _placeholder(doc, "[INSERT SECTION 3(f)/3(o)/3(k) ARGUMENT HERE]")
                 _placeholder(doc, "[EXPLAIN WHY INVENTION IS NOT EXCLUDED UNDER CITED CLAUSE]")
             elif "REGARDING CLAIMS" in h:
                 has_regarding_claims_objection = True
-                _add_regarding_claims_block(
-                    doc,
-                    amended_claims,
-                    dx_range=dx_range,
-                    dx_disclosed_features=dx_disclosed_features,
-                    prior_art_entries=prior_art_entries,
-                )
+                if regarding_claims_content_rendered:
+                    _para(
+                        doc,
+                        "Detailed claim-wise distinction over cited prior art is already submitted above under the Inventive Step reply.",
+                    )
+                else:
+                    _add_regarding_claims_block(
+                        doc,
+                        amended_claims,
+                        dx_range=dx_range,
+                        dx_disclosed_features=dx_disclosed_features,
+                        prior_art_entries=prior_art_entries,
+                    )
+                    regarding_claims_content_rendered = True
             elif "SUFFICIENCY" in h:
                 _placeholder(doc, "[INSERT ABSTRACT / SUFFICIENCY COMPLIANCE STATEMENT HERE]")
             elif "CLARITY" in h:
@@ -894,7 +960,11 @@ def generate_reply_docx(
                 _placeholder(doc, f"[INSERT REPLY TO OBJECTION {obj.number} HERE]")
             _gap(doc, 8)
 
-    if not has_regarding_claims_objection and _extract_numbered_claims(amended_claims):
+    if (
+        not has_regarding_claims_objection
+        and not regarding_claims_content_rendered
+        and _extract_numbered_claims(amended_claims)
+    ):
         _obj_label(doc, "REGARDING CLAIMS:")
         _reply_label(doc)
         _add_regarding_claims_block(
@@ -904,6 +974,7 @@ def generate_reply_docx(
             dx_disclosed_features=dx_disclosed_features,
             prior_art_entries=prior_art_entries,
         )
+        regarding_claims_content_rendered = True
         _gap(doc, 8)
 
     _heading(doc, "FORMAL REQUIREMENTS:")

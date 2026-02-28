@@ -14,7 +14,7 @@ _STOP_HEADINGS = re.compile(
     r"brief\s+description(?:\s+of\s+the\s+drawings?)?|"
     r"technical\s+field|field\s+of\s+the\s+invention|background(?:\s+of\s+the\s+invention)?|"
     r"summary(?:\s+of\s+the\s+invention)?|introduction|index\s+terms?|keywords?|"
-    r"examples?|drawings?|fig(?:ure)?s?)\b",
+    r"drawings?|fig(?:ure)?s?)\b",
     re.I,
 )
 
@@ -24,6 +24,51 @@ def normalize_prior_art_label(label: str, index: int) -> str:
     if re.fullmatch(r"D\d{1,3}", raw):
         return raw
     return f"D{index}"
+
+
+def is_scanned_prior_art_pdf(path: str, sample_pages: int = 10) -> bool:
+    """
+    True only when sampled pages have no usable text layer (image-only scan).
+    PDFs with OCR/text layer should return False and continue with normal extraction.
+    """
+    try:
+        with pdfplumber.open(path) as pdf:
+            total_pages = len(pdf.pages)
+            if total_pages <= 0:
+                return True
+
+            page_indices = _sample_page_indices(total_pages, sample_pages)
+            nonempty_pages = 0
+            alnum_chars = 0
+
+            for idx in page_indices:
+                txt = (pdf.pages[idx].extract_text() or "").strip()
+                if not txt:
+                    continue
+                nonempty_pages += 1
+                alnum_chars += len(re.findall(r"[A-Za-z0-9]", txt))
+
+            if nonempty_pages == 0:
+                return True
+            if nonempty_pages == 1 and alnum_chars < 90 and total_pages >= 3:
+                return True
+            return False
+    except Exception:
+        # Fall back to existing extraction behavior on parser errors.
+        return False
+
+
+def _sample_page_indices(total_pages: int, sample_pages: int) -> List[int]:
+    count = max(1, min(sample_pages, total_pages))
+    if total_pages <= count:
+        return list(range(total_pages))
+
+    # Evenly spaced sampling avoids bias toward only first pages.
+    indices = set()
+    for i in range(count):
+        idx = int(round(i * (total_pages - 1) / (count - 1)))
+        indices.add(max(0, min(total_pages - 1, idx)))
+    return sorted(indices)
 
 
 def clean_prior_art_text(text: str) -> str:
