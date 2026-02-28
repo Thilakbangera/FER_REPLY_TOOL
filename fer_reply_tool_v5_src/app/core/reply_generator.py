@@ -580,14 +580,32 @@ def _contains_section_clause(text: str, clause: str) -> bool:
     return bool(re.search(sec_pat, raw) or re.search(clause_pat, raw) or re.search(short_pat, raw))
 
 
-def _add_non_patentability_static_paras(doc: Document, objection_text: str) -> bool:
+def _add_non_patentability_static_paras(
+    doc: Document,
+    objection_text: str,
+    amended_claims: str = "",
+) -> bool:
     added = False
+
+    claims = _extract_numbered_claims(amended_claims)
+
+    if claims:
+        nums = sorted(n for n, _ in claims)
+        if len(nums) == 1:
+            claim_nums = str(nums[0])
+        else:
+            claim_nums = f"{nums[0]}-{nums[-1]}"
+    else:
+        claim_nums = "1"
+
     if _contains_section_clause(objection_text, "k"):
-        _para(doc, _NON_PATENTABILITY_3K_PARA)
+        _para(doc, _NON_PATENTABILITY_3K_PARA.format(n=claim_nums))
         added = True
+
     if _contains_section_clause(objection_text, "m"):
         _para(doc, _NON_PATENTABILITY_3M_PARA)
         added = True
+
     return added
 
 
@@ -927,7 +945,7 @@ def generate_reply_docx(
                 _placeholder(doc, "[EXPLAIN DISTINGUISHING FEATURES OF AMENDED CLAIMS HERE]")
             elif "NON PATENTABILITY" in h:
                 non_pat_text = f"{obj.heading}\n{obj.body}"
-                if not _add_non_patentability_static_paras(doc, non_pat_text):
+                if not _add_non_patentability_static_paras(doc, non_pat_text, amended_claims):
                     _placeholder(doc, "[INSERT SECTION 3(f)/3(o)/3(k) ARGUMENT HERE]")
                 _placeholder(doc, "[EXPLAIN WHY INVENTION IS NOT EXCLUDED UNDER CITED CLAUSE]")
             elif "REGARDING CLAIMS" in h:
