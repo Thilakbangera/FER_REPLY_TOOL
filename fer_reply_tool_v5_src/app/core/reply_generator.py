@@ -588,7 +588,15 @@ def _add_non_patentability_static_paras(
     added = False
 
     claims = _extract_numbered_claims(amended_claims)
-    claim_nums = ", ".join(str(n) for n, _ in claims) if claims else "1"
+
+    if claims:
+        nums = sorted(n for n, _ in claims)
+        if len(nums) == 1:
+            claim_nums = str(nums[0])
+        else:
+            claim_nums = f"{nums[0]}-{nums[-1]}"
+    else:
+        claim_nums = "1"
 
     if _contains_section_clause(objection_text, "k"):
         _para(doc, _NON_PATENTABILITY_3K_PARA.format(n=claim_nums))
