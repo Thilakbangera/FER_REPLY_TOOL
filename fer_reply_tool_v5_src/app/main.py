@@ -21,6 +21,8 @@ from app.core.fer_parser import (
     extract_applicant_from_cs_docx,
     extract_cs_background_and_summary,
     extract_cs_background_and_summary_from_docx,
+    extract_cs_technical_effect,
+    extract_cs_technical_effect_from_docx,
 )
 from app.core.reply_generator import generate_reply_docx
 from app.core.claims_parser import extract_amended_claims_from_pdf, extract_amended_claims_from_docx
@@ -121,6 +123,7 @@ async def generate_reply(
     amended_claims_pdf: Optional[UploadFile] = File(None),  # Amended Claims PDF/DOCX (required)
     prior_art_pdfs: Optional[List[UploadFile]] = File(None),  # Prior-art PDF/DOCX uploads
     prior_art_diagrams: Optional[List[UploadFile]] = File(None),
+    technical_effect_images: Optional[List[UploadFile]] = File(None),
     title: str = Form(""),  # kept for backward compatibility; CS title is authoritative
     agent: Optional[str] = Form(None),
     office_address: str = Form("THE PATENT OFFICE\nI.P.O BUILDING\nG.S.T.Road, Guindy\nChennai - [PIN]"),
@@ -136,6 +139,7 @@ async def generate_reply(
     fer_path = cs_path = claims_path = None
     prior_art_paths: List[str] = []
     prior_art_diagram_paths: List[str] = []
+    technical_effect_image_paths: List[str] = []
     try:
         fer_path = await _save_upload_to_temp(fer_pdf, suffix=".pdf")
         cs_ext = _ensure_supported_doc_ext(cs_pdf.filename or "", "CS document")
@@ -170,8 +174,10 @@ async def generate_reply(
 
         if cs_ext == ".pdf":
             cs_background, cs_summary = extract_cs_background_and_summary(cs_path)
+            cs_technical_effect = extract_cs_technical_effect(cs_path)
         else:
             cs_background, cs_summary = extract_cs_background_and_summary_from_docx(cs_path)
+            cs_technical_effect = extract_cs_technical_effect_from_docx(cs_path)
 
         # Claims: PDF only (no text fallback)
         claims_text = ""
@@ -289,6 +295,13 @@ async def generate_reply(
                     }
                 )
 
+        for img in list(technical_effect_images or []):
+            if img is None or not (img.filename or "").strip():
+                continue
+            ext = _safe_file_suffix(img.filename, fallback=".png")
+            img_path = await _save_upload_to_temp(img, suffix=ext)
+            technical_effect_image_paths.append(img_path)
+
         doc = generate_reply_docx(
             fer=fer, cs_title=cs_title, amended_claims=claims_text,
             detailed_obs_text=detailed_obs, formal_reqs_text=formal_reqs,
@@ -298,6 +311,8 @@ async def generate_reply(
             formal_reqs_rows=formal_rows,
             cs_background_text=cs_background,
             cs_summary_text=cs_summary,
+            cs_technical_effect_text=cs_technical_effect,
+            technical_effect_image_paths=technical_effect_image_paths,
         )
 
         bio = io.BytesIO()
@@ -308,7 +323,7 @@ async def generate_reply(
             media_type="application/vnd.openxmlformats-officedocument.wordprocessingml.document",
             headers={"Content-Disposition": f'attachment; filename="{filename}"'})
     finally:
-        for p in [fer_path, cs_path, claims_path, *prior_art_paths, *prior_art_diagram_paths]:
+        for p in [fer_path, cs_path, claims_path, *prior_art_paths, *prior_art_diagram_paths, *technical_effect_image_paths]:
             if p:
                 try: os.remove(p)
                 except: pass

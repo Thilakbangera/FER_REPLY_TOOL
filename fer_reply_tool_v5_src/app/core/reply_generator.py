@@ -5,7 +5,7 @@ import re
 from typing import Dict, List, Optional, Tuple
 
 from docx import Document
-from docx.enum.text import WD_ALIGN_PARAGRAPH
+from docx.enum.text import WD_ALIGN_PARAGRAPH, WD_BREAK
 from docx.shared import Inches, Pt, RGBColor
 
 from .fer_parser import FerParseResult
@@ -524,28 +524,6 @@ def _add_regarding_claims_block(
         )
 
 
-def _add_inventive_step_reply_from_cs(
-    doc: Document,
-    cs_background_text: str = "",
-    cs_summary_text: str = "",
-) -> None:
-    bg = (cs_background_text or "").strip()
-    sm = (cs_summary_text or "").strip()
-
-    _para(doc, "Technical Problem:-", bold=True)
-    if bg:
-        _blocktext(doc, bg)
-    else:
-        _placeholder(doc, "[INSERT 'BACKGROUND OF THE INVENTION' FROM CS HERE]")
-
-    _gap(doc, 2)
-    _para(doc, "Technical Solution:-", bold=True)
-    if sm:
-        _blocktext(doc, sm)
-    else:
-        _placeholder(doc, "[INSERT 'SUMMARY OF THE INVENTION' FROM CS HERE]")
-
-
 _NON_PATENTABILITY_3K_PARA = (
     "Applicant respectfully submits that the subject matter of Claims {n} does not fall within the exclusion of "
     "Section 3(k) of the Patents Act, 1970. The claimed invention represents merely a sequence of algorithmic steps "
@@ -563,6 +541,159 @@ _NON_PATENTABILITY_3M_PARA = (
     "the claimed system can be employed in varied ranking or evaluation contexts beyond gaming, underscoring its "
     "industrial applicability. Hence, the applicant prays the Hon. Controller to waive the objection under section 3(m)."
 )
+
+_TECH_SOLUTION_LEAD_PARA = (
+    "The solution are achieved by providing the technical features that includes technical advancement, contribution "
+    "and effect as follows:"
+)
+
+_TECH_HARDWARE_FEATURE_PARA = (
+    "The intricate hardware features introduced in this invention are expounded upon in the specifications and "
+    "corresponding FIGS [INSERT FIG RANGE] to [INSERT FIG RANGE]. Additionally, more comprehensive insights into the "
+    "implementation of these unique hardware features can be found in paragraphs [INSERT PARAGRAPH RANGE]."
+)
+
+_TECH_3K_REGULATION_PARA = (
+    "In accordance with the updated regulations published on June 30, 2017, pertaining to the bestowal of 3k "
+    "algorithm/computer-related innovations, the current invention represents a noteworthy technological progression "
+    "and is not subject to exclusion under Section 3(k). It comprises ample technical measures and processes that meet "
+    "the requirements for being considered a technical advancement."
+)
+
+_TECH_CRI_UPDATE_PARA = (
+    "Please take note that the Revised Guidelines for Examination of Computer Related Inventions (CRI) that were "
+    "issued in 2017 (Page 15) have been updated:"
+)
+
+_TECH_CRI_QUOTE_1 = (
+    "\"It is well-established that, while establishing patentability, the focus should be on the underlying substance "
+    "of the invention and not on the particular form in which it is claimed.\""
+)
+
+_TECH_CRI_QUOTE_2 = (
+    "\"If in substance, the claim, taken as whole, does not fall in any of the excluded categories, the patent should "
+    "not be denied.\""
+)
+
+_TECH_PRESENTS_SOLUTION_PARA = (
+    "It is worth respectfully noting that the subject matter being claimed presents a solution."
+)
+
+_FERID_ALLANI_INTRO_PARA = (
+    "In a recent judgment, the Hon'ble Delhi High Court in the case of Ferid Allani Vs Union of India & ORS (Delhi High Court WP(C) 7/2014 & CM APPL 40736/2019), held that:"
+)
+
+_FERID_ALLANI_QUOTE_PARA = (
+    "\"In today's digital world, when most inventions are based on computer program, it would be retrograde to argue "
+    "that all such inventions would not be patentable. Innovations in the field of artificial intelligence, blockchain "
+    "technologies and other digital products would be based on computer programs, however the same would not become "
+    "non-patentable simply for that reason. Patent applications in these fields would have to be examined to see if "
+    "they result in a technical contribution.\""
+)
+
+_TECH_EFFECT_BULLET_1 = (
+    "- there is bar on patenting is in respect of `computer programs per se` and not all inventions based on computer "
+    "programs"
+)
+
+_TECH_EFFECT_BULLET_2 = (
+    "- claims in a patent application comprising of software/computer programs can have a technical effect and if the "
+    "invention (as claimed in the claims) demonstrate a 'technical effect' or a 'technical contribution' (as defined "
+    "in the Draft Guidelines for Examination of Computer Related Inventions, 2013, and an excerpt for the same has "
+    "been provided below), it is patentable even though it may be based on a computer program."
+)
+
+_TECH_EFFECT_GUIDELINE_PARA = (
+    "In accordance with the Draft Guidelines for Examination of Computer Related Inventions 2013, technical effect and "
+    "technical advancement are defined as follows:"
+)
+
+_TECH_EFFECT_DEFINITION_PARA = (
+    "For the purposes of these guidelines, a technical effect is defined as a solution to a technical problem that the "
+    "invention, as a whole, strives to overcome. Here are a few broad examples of technical effects:"
+)
+
+_NON_PATENTABILITY_WRAPUP_PARA = (
+    "The Applicant further submits that the proposed claims meet all the necessary requirements under the said Act. "
+    "Therefore, the Applicant humbly requests the Learned Controller to kindly consider the proposed claim amendments "
+    "and waive the objection raised above."
+)
+
+
+def _claim_numbers_scope_label(claims: List[Tuple[int, str]]) -> str:
+    nums = sorted({n for n, _ in claims if n >= 1})
+    if not nums:
+        return "[INSERT CLAIM NUMBER(S)]"
+    if len(nums) == 1:
+        return str(nums[0])
+    return f"{nums[0]}-{nums[-1]}"
+
+
+def _extract_claim_text_for_technical_sections(amended_claims: str) -> Tuple[str, List[Tuple[int, str]]]:
+    claims = _extract_numbered_claims(amended_claims)
+    if not claims:
+        raw = _compact_claim_quote(amended_claims)
+        raw = re.sub(r"^\s*\d+[\.\):]\s+", "", raw).strip()
+        if raw:
+            return raw, [(1, raw)]
+        return "", []
+
+    by_num = {n: txt for n, txt in claims}
+    claim1_raw = by_num.get(1, claims[0][1])
+    claim1 = _compact_claim_quote(claim1_raw)
+    claim1 = re.sub(r"^\s*\d+[\.\):]\s+", "", claim1).strip()
+
+    claim_entries: List[Tuple[int, str]] = []
+    for n, txt in claims:
+        body = _compact_claim_quote(txt)
+        body = re.sub(r"^\s*\d+[\.\):]\s+", "", body).strip()
+        if body:
+            claim_entries.append((n, body))
+    return claim1, claim_entries
+
+
+def _claims_single_paragraph(claim_entries: List[Tuple[int, str]]) -> str:
+    bodies: List[str] = []
+    for _, claim_text in claim_entries:
+        body = re.sub(r"\s+", " ", (claim_text or "")).strip()
+        body = re.sub(r"^\s*\d+[\.\):]\s+", "", body).strip()
+        if body:
+            bodies.append(body)
+    if not bodies:
+        return ""
+    merged = " ".join(bodies)
+    merged = re.sub(r"\s+([,.;:!?])", r"\1", merged)
+    merged = re.sub(r"\s{2,}", " ", merged).strip()
+    return merged
+
+
+def _add_technical_effect_images(doc: Document, image_paths: Optional[List[str]]) -> bool:
+    paths = [p for p in (image_paths or []) if (p or "").strip()]
+    if not paths:
+        return False
+
+    pb = doc.add_paragraph()
+    pb.add_run().add_break(WD_BREAK.PAGE)
+
+    fig_no = 1
+    for path in paths:
+        try:
+            img_p = doc.add_paragraph()
+            img_p.alignment = WD_ALIGN_PARAGRAPH.CENTER
+            img_p.add_run().add_picture(path, width=Inches(5.8))
+
+            cap_p = doc.add_paragraph()
+            cap_p.alignment = WD_ALIGN_PARAGRAPH.CENTER
+            cap_p.add_run(f"FIG. {fig_no}")
+            fig_no += 1
+
+            desc_p = doc.add_paragraph()
+            desc_p.alignment = WD_ALIGN_PARAGRAPH.CENTER
+            r = desc_p.add_run("[Enter Description of the diagram]")
+            r.font.color.rgb = RGBColor(0xC0, 0x00, 0x00)
+        except Exception:
+            _placeholder(doc, "[TECHNICAL EFFECT IMAGE COULD NOT BE INSERTED]")
+    return True
 
 
 def _contains_section_clause(text: str, clause: str) -> bool:
@@ -583,30 +714,81 @@ def _contains_section_clause(text: str, clause: str) -> bool:
 def _add_non_patentability_static_paras(
     doc: Document,
     objection_text: str,
-    amended_claims: str = "",
+    claim_scope_label: str,
 ) -> bool:
     added = False
-
-    claims = _extract_numbered_claims(amended_claims)
-
-    if claims:
-        nums = sorted(n for n, _ in claims)
-        if len(nums) == 1:
-            claim_nums = str(nums[0])
-        else:
-            claim_nums = f"{nums[0]}-{nums[-1]}"
-    else:
-        claim_nums = "1"
-
     if _contains_section_clause(objection_text, "k"):
-        _para(doc, _NON_PATENTABILITY_3K_PARA.format(n=claim_nums))
+        _para(doc, _NON_PATENTABILITY_3K_PARA.format(n=claim_scope_label))
         added = True
-
     if _contains_section_clause(objection_text, "m"):
         _para(doc, _NON_PATENTABILITY_3M_PARA)
         added = True
-
     return added
+
+
+def _add_non_patentability_technical_sections(
+    doc: Document,
+    amended_claims: str,
+    cs_background_text: str = "",
+    cs_summary_text: str = "",
+    cs_technical_effect_text: str = "",
+    technical_effect_image_paths: Optional[List[str]] = None,
+) -> None:
+    bg = (cs_background_text or "").strip()
+    sm = (cs_summary_text or "").strip()
+    te = (cs_technical_effect_text or "").strip()
+    claim1_text, claim_entries = _extract_claim_text_for_technical_sections(amended_claims)
+
+    _gap(doc, 2)
+    _obj_label(doc, "TECHNICAL PROBLEM SOLVED BY THE INVENITON:")
+    if bg:
+        _blocktext(doc, bg)
+    else:
+        _placeholder(doc, "[INSERT 'BACKGROUND OF THE INVENTION' FROM CS HERE]")
+
+    _gap(doc, 2)
+    _obj_label(doc, "TECHNICAL SOLUTION SOLVED BY THE INVENITON:")
+    _para(doc, _TECH_SOLUTION_LEAD_PARA, bold=True, underline=True)
+    if claim1_text:
+        _para(doc, claim1_text)
+    else:
+        _placeholder(doc, "[INSERT CLAIM-1 FEATURES HERE]")
+    _para(doc, _TECH_HARDWARE_FEATURE_PARA, bold=True, underline=True)
+    _para(doc, _TECH_3K_REGULATION_PARA)
+    _para(doc, _TECH_CRI_UPDATE_PARA)
+    _para(doc, _TECH_CRI_QUOTE_1)
+    _para(doc, _TECH_CRI_QUOTE_2)
+    _para(doc, _TECH_PRESENTS_SOLUTION_PARA)
+    if claim1_text:
+        _para(doc, claim1_text)
+    else:
+        _placeholder(doc, "[INSERT CLAIM-1 FEATURES HERE]")
+    if sm:
+        _blocktext(doc, sm)
+    else:
+        _placeholder(doc, "[INSERT 'SUMMARY OF THE INVENTION' FROM CS HERE]")
+
+    _para(doc, _FERID_ALLANI_INTRO_PARA)
+    _para(doc, _FERID_ALLANI_QUOTE_PARA)
+    _para(doc, _TECH_EFFECT_BULLET_1)
+    _para(doc, _TECH_EFFECT_BULLET_2)
+    _para(doc, _TECH_EFFECT_GUIDELINE_PARA)
+    _gap(doc, 2)
+    _obj_label(doc, "Technical Effect:")
+    _para(doc, _TECH_EFFECT_DEFINITION_PARA)
+    te_resolved = te or sm or bg
+    if te_resolved:
+        _blocktext(doc, te_resolved)
+    else:
+        _placeholder(doc, "[INSERT TECHNICAL EFFECT HERE]")
+    claims_para = _claims_single_paragraph(claim_entries)
+    if claims_para:
+        _para(doc, claims_para)
+    else:
+        _placeholder(doc, "[INSERT AMENDED CLAIMS HERE - SINGLE PARAGRAPH, NO NUMBERING]")
+    if not _add_technical_effect_images(doc, technical_effect_image_paths):
+        _placeholder(doc, "[INSERT TECH_SOLUTION_IMAGES HERE]")
+    _para(doc, _NON_PATENTABILITY_WRAPUP_PARA)
 
 
 _FORMAL_CATEGORY_PATTERNS = [
@@ -847,6 +1029,8 @@ def generate_reply_docx(
     formal_reqs_rows: Optional[List[Tuple[str, str]]] = None,
     cs_background_text: str = "",
     cs_summary_text: str = "",
+    cs_technical_effect_text: str = "",
+    technical_effect_image_paths: Optional[List[str]] = None,
 ) -> Document:
     doc = Document()
     doc.styles["Normal"].font.name = "Times New Roman"
@@ -888,6 +1072,7 @@ def generate_reply_docx(
     _heading(doc, "AMENDMENTS MADE TO THE CLAIMS ARE AS FOLLOWS")
     _para(doc, "We Claim:", bold=True)
     claims_blocks = _extract_numbered_claims(amended_claims)
+    claim_scope_label = _claim_numbers_scope_label(claims_blocks)
     if claims_blocks:
         for _, block in claims_blocks:
             _para(doc, _compact_claim_quote(block))
@@ -902,6 +1087,7 @@ def generate_reply_docx(
     objections = fer.objections or []
     has_regarding_claims_objection = False
     regarding_claims_content_rendered = False
+    non_pat_technical_sections_rendered = False
 
     if not objections:
         for i in range(1, 7):
@@ -922,11 +1108,6 @@ def generate_reply_docx(
             _reply_label(doc)
 
             if "INVENTIVE STEP" in h:
-                _add_inventive_step_reply_from_cs(
-                    doc,
-                    cs_background_text=cs_background_text,
-                    cs_summary_text=cs_summary_text,
-                )
                 if _extract_numbered_claims(amended_claims):
                     _add_regarding_claims_block(
                         doc,
@@ -945,9 +1126,19 @@ def generate_reply_docx(
                 _placeholder(doc, "[EXPLAIN DISTINGUISHING FEATURES OF AMENDED CLAIMS HERE]")
             elif "NON PATENTABILITY" in h:
                 non_pat_text = f"{obj.heading}\n{obj.body}"
-                if not _add_non_patentability_static_paras(doc, non_pat_text, amended_claims):
+                if not _add_non_patentability_static_paras(doc, non_pat_text, claim_scope_label):
                     _placeholder(doc, "[INSERT SECTION 3(f)/3(o)/3(k) ARGUMENT HERE]")
                 _placeholder(doc, "[EXPLAIN WHY INVENTION IS NOT EXCLUDED UNDER CITED CLAUSE]")
+                if not non_pat_technical_sections_rendered:
+                    _add_non_patentability_technical_sections(
+                        doc,
+                        amended_claims=amended_claims,
+                        cs_background_text=cs_background_text,
+                        cs_summary_text=cs_summary_text,
+                        cs_technical_effect_text=cs_technical_effect_text,
+                        technical_effect_image_paths=technical_effect_image_paths,
+                    )
+                    non_pat_technical_sections_rendered = True
             elif "REGARDING CLAIMS" in h:
                 has_regarding_claims_objection = True
                 if regarding_claims_content_rendered:
@@ -993,6 +1184,22 @@ def generate_reply_docx(
             prior_art_entries=prior_art_entries,
         )
         regarding_claims_content_rendered = True
+        _gap(doc, 8)
+
+    if not non_pat_technical_sections_rendered:
+        _heading(doc, "SUBMISSION TO NON PATENTABILITY U/S 3")
+        _obj_label(doc, "NON PATENTABILITY U/S 3:")
+        _reply_label(doc)
+        _placeholder(doc, "[INSERT SECTION 3(k)/3(m) ARGUMENT HERE]")
+        _placeholder(doc, "[EXPLAIN WHY INVENTION IS NOT EXCLUDED UNDER CITED CLAUSE]")
+        _add_non_patentability_technical_sections(
+            doc,
+            amended_claims=amended_claims,
+            cs_background_text=cs_background_text,
+            cs_summary_text=cs_summary_text,
+            cs_technical_effect_text=cs_technical_effect_text,
+            technical_effect_image_paths=technical_effect_image_paths,
+        )
         _gap(doc, 8)
 
     _heading(doc, "FORMAL REQUIREMENTS:")

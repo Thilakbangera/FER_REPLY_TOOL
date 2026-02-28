@@ -19,6 +19,7 @@ prior_art_input_mode = "pdf"
 prior_arts_entries = []
 prior_art_pdf_uploads = []
 prior_art_diagram_uploads = []
+technical_effect_image_uploads = []
 prior_art_complete = True
 
 
@@ -143,6 +144,14 @@ with col_right:
     else:
         st.info("Upload the Amended Claims PDF/DOCX to populate the claims section.")
 
+    st.markdown("### 5) Technical Effect Images *(optional)*")
+    technical_effect_image_uploads = st.file_uploader(
+        "Upload image(s) to be inserted under Technical Effect",
+        type=["png", "jpg", "jpeg"],
+        accept_multiple_files=True,
+        key="technical_effect_images",
+    ) or []
+
 st.divider()
 
 col1, col2 = st.columns(2)
@@ -177,6 +186,9 @@ with col2:
             for img in prior_art_diagram_uploads:
                 if img is not None:
                     files.append(("prior_art_diagrams", (img.name, img.getvalue(), img.type or "application/octet-stream")))
+            for img in technical_effect_image_uploads:
+                if img is not None:
+                    files.append(("technical_effect_images", (img.name, img.getvalue(), img.type or "application/octet-stream")))
 
             prior_arts_meta = [
                 {
@@ -232,8 +244,9 @@ st.markdown(
    - **Manual Abstract Text**: type abstract for each D1/D2/...
 5. Use **+ Add Prior Art** to add D3, D4, ...
 6. Optional: upload per-D **Diagram Image**
-7. Optionally fill Patent Agent name, DX range/disclosed features, and patent office address
-8. Click **Generate FER Reply DOCX**
-9. Open in Word and fill the red placeholders for each objection reply
+7. Optional: upload **Technical Effect Images** (inserted under Technical Effect section)
+8. Optionally fill Patent Agent name, DX range/disclosed features, and patent office address
+9. Click **Generate FER Reply DOCX**
+10. Open in Word and fill the red placeholders for each objection reply
 """
 )

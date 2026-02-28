@@ -1283,12 +1283,96 @@ def _extract_cs_background_and_summary_from_text(text: str) -> Tuple[str, str]:
     return background, summary
 
 
+_TECH_EFFECT_KW_RE = re.compile(
+    r"\b("
+    r"technical\s+effect|technical\s+advance|technical\s+contribution|"
+    r"improv\w*|enhanc\w*|efficient|efficiency|accurac\w*|reliab\w*|"
+    r"latency|delay|throughput|performance|memory|power|bandwidth|security|secure|robust\w*|stability|"
+    r"thereby|thus|hence|results?\s+in|leads?\s+to|enables?|facilitates?|achieves?"
+    r")\b",
+    re.I,
+)
+
+
+def _is_tech_effect_boilerplate_para(paragraph: str) -> bool:
+    low = re.sub(r"\s+", " ", (paragraph or "")).strip().lower()
+    if not low:
+        return True
+    if "for purposes of illustration and description" in low:
+        return True
+    if "not intended to be exhaustive" in low:
+        return True
+    if "many modifications and variations are possible" in low:
+        return True
+    if "without departing from the spirit or scope of the claims" in low:
+        return True
+    return False
+
+
+def _is_figure_caption_like_para(paragraph: str) -> bool:
+    txt = re.sub(r"\s+", " ", (paragraph or "")).strip()
+    if not txt:
+        return False
+    return bool(re.match(r"^\s*(?:fig(?:ure)?\.?\s*\d+)\b", txt, re.I))
+
+
+def _extract_cs_technical_effect_from_text(text: str) -> str:
+    if not text.strip():
+        return ""
+
+    numbered = r"(?:\[\d{3,4}\]\s*)?(?:\d+\s*)?(?:[A-Z]\.\s*)?"
+
+    detailed_patterns = [
+        rf"(?im)^\s*{numbered}DETAILED\s+DESCRIPTION\s+OF\s+THE\s+INVENTION\s*[:\-]?\s*",
+        rf"(?im)^\s*{numbered}DETAILED\s+DESCRIPTION\s+OF\s+INVENTION\s*[:\-]?\s*",
+        rf"(?im)^\s*{numbered}DETAILED\s+DESCRIPTION\s*[:\-]?\s*",
+        rf"(?im)^\s*{numbered}DESCRIPTION\s+OF\s+THE\s+INVENTION\s*[:\-]?\s*",
+    ]
+    detailed_stop_patterns = [
+        rf"(?im)^\s*{numbered}CLAIMS?\s*[:\-]?\s*",
+        rf"(?im)^\s*{numbered}ABSTRACT\s*[:\-]?\s*",
+        rf"(?im)^\s*{numbered}WE\s+CLAIM\s*[:\-]?\s*",
+        rf"(?im)^\s*{numbered}WHAT\s+IS\s+CLAIMED\s*[:\-]?\s*",
+    ]
+
+    detailed = _extract_cs_section(text, detailed_patterns, detailed_stop_patterns)
+    if not detailed:
+        return ""
+
+    paras = [p.strip() for p in re.split(r"\n{2,}", detailed) if p and p.strip()]
+    paras = [
+        p
+        for p in paras
+        if not _is_tech_effect_boilerplate_para(p) and not _is_figure_caption_like_para(p)
+    ]
+    if not paras:
+        return ""
+
+    effect_paras = [p for p in paras if _TECH_EFFECT_KW_RE.search(p)]
+    selected = effect_paras[:4] if effect_paras else paras[:3]
+
+    out: List[str] = []
+    for para in selected:
+        t = re.sub(r"\s+", " ", para).strip()
+        if t:
+            out.append(t)
+    return "\n\n".join(out).strip()
+
+
 def extract_cs_background_and_summary(path: str) -> Tuple[str, str]:
     return _extract_cs_background_and_summary_from_text(read_pdf_text(path) or "")
 
 
 def extract_cs_background_and_summary_from_docx(path: str) -> Tuple[str, str]:
     return _extract_cs_background_and_summary_from_text(read_docx_text(path) or "")
+
+
+def extract_cs_technical_effect(path: str) -> str:
+    return _extract_cs_technical_effect_from_text(read_pdf_text(path) or "")
+
+
+def extract_cs_technical_effect_from_docx(path: str) -> str:
+    return _extract_cs_technical_effect_from_text(read_docx_text(path) or "")
 
 
 def parse_fer_pdf(path: str) -> FerParseResult:
