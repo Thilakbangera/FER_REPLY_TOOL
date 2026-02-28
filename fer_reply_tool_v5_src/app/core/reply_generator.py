@@ -547,7 +547,7 @@ def _add_inventive_step_reply_from_cs(
 
 
 _NON_PATENTABILITY_3K_PARA = (
-    "Applicant respectfully submits that the subject matter of Claims 1-10 does not fall within the exclusion of "
+    "Applicant respectfully submits that the subject matter of Claims {n} does not fall within the exclusion of "
     "Section 3(k) of the Patents Act, 1970. The claimed invention represents merely a sequence of algorithmic steps "
     "executed on a conventional computer is inconsistent with the express structural and functional limitations recited "
     "in the claims and fully supported by the Complete Specification. The components in the Applicant claimed invention "
