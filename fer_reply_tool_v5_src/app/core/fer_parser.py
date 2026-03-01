@@ -1187,6 +1187,52 @@ def _find_first_match(patterns: List[str], text: str, start: int = 0):
     return best
 
 
+def _remove_inline_footer_fragments(line: str) -> str:
+    s = (line or "")
+    patterns = [
+        r"\bpage\s*\d+\s*(?:of|/)\s*\d+\b",
+        r"\bpage\s*\d+\b",
+        r"\b\d+\s*of\s*\d+\s*\|\s*p\s*a\s*g\s*e\b",
+        r"\b\d+\s*\|\s*p\s*a\s*g\s*e\b",
+        r"\b[A-Za-z][A-Za-z0-9 .,&'/-]{2,}\s+\d+\s*of\s*\d+\s*\|\s*p\s*a\s*g\s*e\b",
+        r"(?:(?<=^)|(?<=\s))\d{1,3}\s*/\s*\d{1,3}(?=\s|$)",   # e.g. 7/30
+        r"(?:(?<=^)|(?<=\s))\d{1,3}\s*\[\d{3,5}\](?=\s|$)",   # e.g. 5 [0026]
+        r"\[\d{3,5}\]",                                        # e.g. [0034]
+    ]
+    for pat in patterns:
+        s = re.sub(pat, " ", s, flags=re.I)
+    s = re.sub(r"\s{2,}", " ", s).strip(" \t|:-")
+    return s
+
+
+def _is_footer_or_pagination_line(line: str) -> bool:
+    s = re.sub(r"\s+", " ", (line or "")).strip()
+    if not s:
+        return True
+
+    # Catch pagination fragments even when prefixed by org/footer text.
+    if re.search(r"\bpage\s*\d+\s*(?:of|/)\s*\d+\b", s, re.I):
+        return True
+    if re.search(r"\b\d+\s*of\s*\d+\s*\|\s*(?:page|p\s*a\s*g\s*e)\b", s, re.I):
+        return True
+    if re.search(r"\b\d+\s*\|\s*(?:page|p\s*a\s*g\s*e)\b", s, re.I):
+        return True
+
+    if re.match(r"^(?:page|p\s*a\s*g\s*e)\s*\d+\s*(?:of|/)\s*\d+$", s, re.I):
+        return True
+    if re.match(r"^\d+\s*of\s*\d+\s*\|\s*(?:page|p\s*a\s*g\s*e)$", s, re.I):
+        return True
+    if re.match(r"^\d+\s*\|\s*(?:page|p\s*a\s*g\s*e)$", s, re.I):
+        return True
+    if re.match(r"^\d+\s*$", s):
+        return True
+    if re.match(r"^(?:the\s+patent\s+office|controller\s+of\s+patents|patent\s+agent)\b", s, re.I):
+        return True
+    if re.search(r"\b(?:all\s+rights\s+reserved|copyright)\b", s, re.I):
+        return True
+    return False
+
+
 def _clean_cs_section_text(section: str) -> str:
     text = (section or "").replace("\u00ad", "")
     text = re.sub(r"\(cid:\d+\)", "", text)
@@ -1200,24 +1246,20 @@ def _clean_cs_section_text(section: str) -> str:
                 cleaned_lines.append("")
             continue
 
-        if re.match(r"^Page\s+\d+\s+of\s+\d+$", line, re.I):
-            continue
-        if re.match(r"^\d+\s*\|\s*Page\b", line, re.I):
-            continue
-        if re.match(r"^Page\s+\d+$", line, re.I):
-            continue
-        if re.match(r"^THE\s+PATENT\s+OFFICE$", line, re.I):
-            continue
-        if re.match(r"^[\[\(]?\d{1,4}[\]\)]?$", line):
+        if _is_footer_or_pagination_line(line):
             continue
 
         # Remove paragraph/line numbering prefixes from CS OCR.
         line = re.sub(r"^\[\d{3,5}\]\s*", "", line)
-        line = re.sub(r"^\(?\d{1,3}\)?\s+(?=[A-Za-z])", "", line)
+        line = re.sub(r"^\d{1,3}\s*/\s*\d{1,3}\s+(?=[\"'“”‘’A-Za-z])", "", line)
+        line = re.sub(r"^\d{1,3}\s*\[\d{3,5}\]\s*", "", line)
+        line = re.sub(r"^\(?\d{1,3}\)?\s+(?=[\"'“”‘’A-Za-z])", "", line)
+        line = re.sub(r"^\(?\d{4,5}\)?\s+(?=[A-Z][a-z])", "", line)
         line = re.sub(r"^\(?\d{1,3}\)?[.:]\s*", "", line)
+        line = _remove_inline_footer_fragments(line)
         line = re.sub(r"\s{2,}", " ", line).strip()
 
-        if not line:
+        if not line or _is_footer_or_pagination_line(line):
             continue
         cleaned_lines.append(line)
 
@@ -1298,6 +1340,8 @@ def _is_tech_effect_boilerplate_para(paragraph: str) -> bool:
     low = re.sub(r"\s+", " ", (paragraph or "")).strip().lower()
     if not low:
         return True
+    if _is_footer_or_pagination_line(low):
+        return True
     if "for purposes of illustration and description" in low:
         return True
     if "not intended to be exhaustive" in low:
@@ -1353,7 +1397,10 @@ def _extract_cs_technical_effect_from_text(text: str) -> str:
 
     out: List[str] = []
     for para in selected:
-        t = re.sub(r"\s+", " ", para).strip()
+        t = _remove_inline_footer_fragments(para)
+        t = re.sub(r"\s+", " ", t).strip()
+        if _is_footer_or_pagination_line(t):
+            continue
         if t:
             out.append(t)
     return "\n\n".join(out).strip()

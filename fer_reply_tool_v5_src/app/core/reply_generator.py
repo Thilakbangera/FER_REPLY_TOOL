@@ -733,11 +733,39 @@ def _add_non_patentability_technical_sections(
     cs_summary_text: str = "",
     cs_technical_effect_text: str = "",
     technical_effect_image_paths: Optional[List[str]] = None,
+    include_static_3k_text: bool = True,
 ) -> None:
     bg = (cs_background_text or "").strip()
     sm = (cs_summary_text or "").strip()
     te = (cs_technical_effect_text or "").strip()
     claim1_text, claim_entries = _extract_claim_text_for_technical_sections(amended_claims)
+
+    # For non-3(k) non-patentability objections, keep only the short technical-solution/effect block.
+    if not include_static_3k_text:
+        _gap(doc, 2)
+        _obj_label(doc, "TECHNICAL SOLUTION SOLVED BY THE INVENITON:")
+        if sm:
+            _blocktext(doc, sm)
+        else:
+            _placeholder(doc, "[INSERT 'SUMMARY OF THE INVENTION' FROM CS HERE]")
+
+        _gap(doc, 2)
+        _obj_label(doc, "Technical Effect:")
+        te_resolved = te or sm or bg
+        if te_resolved:
+            _blocktext(doc, te_resolved)
+        else:
+            _placeholder(doc, "[INSERT TECHNICAL EFFECT HERE]")
+
+        claims_para = _claims_single_paragraph(claim_entries)
+        if claims_para:
+            _para(doc, claims_para)
+        else:
+            _placeholder(doc, "[INSERT AMENDED CLAIMS HERE - SINGLE PARAGRAPH, NO NUMBERING]")
+
+        if not _add_technical_effect_images(doc, technical_effect_image_paths):
+            _placeholder(doc, "[INSERT TECH_SOLUTION_IMAGES HERE]")
+        return
 
     _gap(doc, 2)
     _obj_label(doc, "TECHNICAL PROBLEM SOLVED BY THE INVENITON:")
@@ -1126,6 +1154,7 @@ def generate_reply_docx(
                 _placeholder(doc, "[EXPLAIN DISTINGUISHING FEATURES OF AMENDED CLAIMS HERE]")
             elif "NON PATENTABILITY" in h:
                 non_pat_text = f"{obj.heading}\n{obj.body}"
+                has_3k_clause = _contains_section_clause(non_pat_text, "k")
                 if not _add_non_patentability_static_paras(doc, non_pat_text, claim_scope_label):
                     _placeholder(doc, "[INSERT SECTION 3(f)/3(o)/3(k) ARGUMENT HERE]")
                 _placeholder(doc, "[EXPLAIN WHY INVENTION IS NOT EXCLUDED UNDER CITED CLAUSE]")
@@ -1137,6 +1166,7 @@ def generate_reply_docx(
                         cs_summary_text=cs_summary_text,
                         cs_technical_effect_text=cs_technical_effect_text,
                         technical_effect_image_paths=technical_effect_image_paths,
+                        include_static_3k_text=has_3k_clause,
                     )
                     non_pat_technical_sections_rendered = True
             elif "REGARDING CLAIMS" in h:
@@ -1199,6 +1229,7 @@ def generate_reply_docx(
             cs_summary_text=cs_summary_text,
             cs_technical_effect_text=cs_technical_effect_text,
             technical_effect_image_paths=technical_effect_image_paths,
+            include_static_3k_text=False,
         )
         _gap(doc, 8)
 
